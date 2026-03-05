@@ -164,7 +164,7 @@ function postBuyerMenu() {
     reply_markup: {
       inline_keyboard: [
         [
-          { text: '🔁 Transfer To Main', callback_data: 'transfer_to_main' }
+          { text: '🔁 Transfer To Main', callback_data: 'transfer_main' }
         ],
         [
           { text: '💸 Distribute SOL', callback_data: 'distribute_sol' },
@@ -1459,4 +1459,5 @@ async function transferAllToAddress(session, chatId, receiverPubkey, buyers) {
   );
 }
 });
+
 
