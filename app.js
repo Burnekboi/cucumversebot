@@ -164,6 +164,9 @@ function postBuyerMenu() {
     reply_markup: {
       inline_keyboard: [
         [
+          { text: '🔁 Transfer To Main', callback_data: 'transfer_to_main' }
+        ],
+        [
           { text: '💸 Distribute SOL', callback_data: 'distribute_sol' },
           { text: '📂 Wallet Status', callback_data: 'wallet_status_post' }
         ],
@@ -174,7 +177,6 @@ function postBuyerMenu() {
     }
   };
 }
-
 
 function actionMenu(session) {
   return {
@@ -1457,3 +1459,4 @@ async function transferAllToAddress(session, chatId, receiverPubkey, buyers) {
   );
 }
 });
+
