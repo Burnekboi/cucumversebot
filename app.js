@@ -37,7 +37,7 @@ const connection = getSmartConnection();
    CUCUMVERSE API BRIDGE
 ===================================================== */
 app.use(cors({
-  origin: process.env.FRONTEND_URL || "*", // Supports Vercel URL via Env Var
+  origin: process.env.WEBAPP_URL || "*", // Supports Vercel URL via Env Var
   credentials: true
 }));
 
