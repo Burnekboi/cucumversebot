@@ -164,26 +164,7 @@ app.post('/api/deploy', async (req, res) => {
   console.log("-----------------------------------------------\n");
 });
 
-// STATIC FILE SERVING
-app.use((req, res, next) => {
-  if (req.url.startsWith('/api')) return next();
-  express.static(path.join(__dirname, 'dist'))(req, res, next);
-});
-
-// THE CATCH-ALL (Regex Bypass)
-app.get(/.*/, (req, res) => {
-  if (req.url.startsWith('/api')) {
-    return res.status(404).json({ success: false, error: "API Route Not Found" });
-  }
-  const indexPath = path.join(__dirname, 'dist', 'index.html');
-  res.sendFile(indexPath, (err) => {
-    if (err) {
-      res.status(500).send("Dashboard not found. Run 'npm run build'.");
-    }
-  });
-});
-
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
   console.log(`\n=====================================================`);
   console.log(`🚀 CUCUMVERSE API SERVER LIVE ON PORT ${PORT}`);
