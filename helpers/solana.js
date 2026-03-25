@@ -188,7 +188,7 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
 
     session.liveLogs.push({
       status: 'success',
-      message: `🎉 You've deployed ${symbol} token!`
+      message: `🎉 ${symbol} token deployed succesfully!`
     });
 
     // ---------------- SWARM BUY ----------------
