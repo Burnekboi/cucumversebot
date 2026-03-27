@@ -1,5 +1,6 @@
-const axios = require('axios');
-const { Keypair, VersionedTransaction } = require('@solana/web3.js');
+const { Keypair, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+const { AnchorProvider } = require('@coral-xyz/anchor');
+const { PumpFunSDK } = require('pumpdotfun-sdk');
 
 const { base58Decode } = require('../utils/base58');
 const {
@@ -8,6 +9,14 @@ const {
   fetchTokenPriceInSol,
   sellTokenAmount
 } = require('./solana');
+
+function makeWallet(keypair) {
+  return {
+    publicKey: keypair.publicKey,
+    signTransaction: async (tx) => { tx.sign([keypair]); return tx; },
+    signAllTransactions: async (txs) => { txs.forEach(tx => tx.sign([keypair])); return txs; }
+  };
+}
 
 // ---------------- MAIN TRADING ----------------
 async function performRealTrading(bot, connection, session, chatId) {
@@ -66,52 +75,23 @@ async function performRealTrading(bot, connection, session, chatId) {
 
           const beforeBalance = await getTokenBalance(connection, buyer.pub, contractAddress);
 
-          // PumpPortal buy — JSON body, base58 tx response
-          const buyBody = {
-            publicKey: buyer.pub,
-            action: "buy",
-            mint: contractAddress,
-            amount: buyAmount.toFixed(6),
-            denominatedInSol: "true",
-            slippage: slippage,
-            priorityFee: 0.005,
-            pool: "pump"
-          };
+          // Use pumpdotfun-sdk directly — PumpPortal local API is unreliable
+          const buyerKeypair = Keypair.fromSecretKey(base58Decode(buyer.priv));
+          const provider     = new AnchorProvider(connection, makeWallet(buyerKeypair), { commitment: 'confirmed' });
+          const sdk          = new PumpFunSDK(provider);
 
-          const res = await axios.post(
-            'https://pumpportal.fun/api/trade-local',
-            buyBody,
-            {
-              headers: { "Content-Type": "application/json" },
-              validateStatus: () => true
-            }
+          const buyLamports = BigInt(Math.floor(buyAmount * LAMPORTS_PER_SOL));
+
+          const result = await sdk.buy(
+            buyerKeypair,
+            new PublicKey(contractAddress),
+            buyLamports,
+            BigInt(500), // 5% slippage in basis points
+            { unitLimit: 250000, unitPrice: 250000 }
           );
 
-          if (res.status !== 200) {
-            throw new Error(`PumpPortal buy ${res.status}: ${JSON.stringify(res.data)?.slice(0, 200)}`);
-          }
-
-          // PumpPortal returns a single base58-encoded tx string for single trades
-          const encoded = Array.isArray(res.data) ? res.data[0] : res.data;
-          if (!encoded || typeof encoded !== 'string') {
-            throw new Error(`Unexpected buy response: ${JSON.stringify(res.data)}`);
-          }
-
-          const tx = VersionedTransaction.deserialize(base58Decode(encoded));
-
-          tx.sign([
-            Keypair.fromSecretKey(base58Decode(buyer.priv))
-          ]);
-
-          const signature = await connection.sendRawTransaction(
-            tx.serialize(),
-            { skipPreflight: true }
-          );
-
-          const confirmation = await connection.confirmTransaction(signature, "confirmed");
-
-          if (confirmation.value.err) {
-            throw new Error("TX failed on-chain");
+          if (!result.success) {
+            throw new Error(`SDK buy failed: ${result.error || 'unknown'}`);
           }
 
           const afterBalance = await getTokenBalance(connection, buyer.pub, contractAddress);
