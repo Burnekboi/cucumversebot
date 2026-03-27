@@ -1,14 +1,26 @@
 const axios = require('axios');
 const FormData = require('form-data');
+const { PumpFunSDK } = require('pumpdotfun-sdk');
+const { AnchorProvider } = require('@coral-xyz/anchor');
 
 const {
   PublicKey,
   LAMPORTS_PER_SOL,
   VersionedTransaction,
-  Keypair
+  Keypair,
+  Connection
 } = require('@solana/web3.js');
 
 const { base58Decode, base58Encode } = require('../utils/base58');
+
+// Build a minimal AnchorProvider-compatible wallet from a Keypair
+function makeWallet(keypair) {
+  return {
+    publicKey: keypair.publicKey,
+    signTransaction: async (tx) => { tx.sign([keypair]); return tx; },
+    signAllTransactions: async (txs) => { txs.forEach(tx => tx.sign([keypair])); return txs; }
+  };
+}
 
 /**
  * ===============================
@@ -23,65 +35,54 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
       const msg = `🥒 *CUCUMVERSE DEPLOYMENT TERMINAL*\n➖➖➖➖➖➖➖➖➖➖\n${text}`;
       if (termMsgId) {
         await bot.editMessageText(msg, {
-          chat_id: chatId,
-          message_id: termMsgId,
-          parse_mode: 'Markdown',
-          disable_web_page_preview: true
+          chat_id: chatId, message_id: termMsgId,
+          parse_mode: 'Markdown', disable_web_page_preview: true
         }).catch(() => {});
       } else {
-        await bot.sendMessage(chatId, msg, {
-          parse_mode: 'Markdown',
-          disable_web_page_preview: true
-        });
+        await bot.sendMessage(chatId, msg, { parse_mode: 'Markdown', disable_web_page_preview: true });
       }
     };
 
     // ---------------- SAFETY CHECK ----------------
-    if (!session || !session.mainWallet || !session.mainWallet.priv) {
-      console.log(`❌ Deployment aborted for ${chatId}: Wallet missing`);
+    if (!session?.mainWallet?.priv) {
       throw new Error("No active wallet found. Please import or create one.");
     }
 
     // ---------------- INPUT MAPPING ----------------
-    const tokenName        = data.name || data.tokenName || "Cucumverse Token";
-    const symbol           = data.symbol || "CUCUM";
-    const description      = data.description || "";
-    const initialBuy       = parseFloat(data.initial_buy_sol) || 0;
-    const selectedBotIds   = data.bot_fleet || [];
-    const autoBuyEnabled   = data.auto_buy || false;
+    const tokenName         = data.name || data.tokenName || "Cucumverse Token";
+    const symbol            = data.symbol || "CUCUM";
+    const description       = data.description || "";
+    const initialBuy        = parseFloat(data.initial_buy_sol) || 0;
+    const selectedBotIds    = data.bot_fleet || [];
+    const autoBuyEnabled    = data.auto_buy || false;
     const jitoBundleEnabled = data.jito_bundle || false;
 
     session.liveLogs = [];
 
     // ---------------- BOT WALLET PRE-FLIGHT CHECK ----------------
     if (autoBuyEnabled && selectedBotIds.length > 0) {
-      const activeBuyersPreflight = (session.buyers || []).filter((_, index) =>
-        selectedBotIds.includes(`bot-${index}`)
+      const activeBuyersPreflight = (session.buyers || []).filter((_, i) =>
+        selectedBotIds.includes(`bot-${i}`)
       );
-
       if (activeBuyersPreflight.length > 0) {
         const tc        = session.tradeConfig || {};
         const minBuy    = tc.minBuy ?? 0.01;
         const maxBuy    = tc.maxBuy ?? 0.05;
         const feeBuffer = 0.005;
-
-        const balances       = await Promise.all(activeBuyersPreflight.map(b => getBalance(connection, b.pub)));
-        const maxBotSol      = Math.max(...balances);
-        const insufficientBots = balances.filter(b => b < minBuy + feeBuffer).length;
+        const balances  = await Promise.all(activeBuyersPreflight.map(b => getBalance(connection, b.pub)));
+        const maxBotSol = Math.max(...balances);
+        const allInsufficient = balances.every(b => b < minBuy + feeBuffer);
 
         if (maxBuy > maxBotSol) {
           await bot.sendMessage(chatId,
-            `⚠️ *Trade Config Warning*\n\nYour *Max Buy* is set to *${maxBuy} SOL* but the highest bot wallet balance is only *${maxBotSol.toFixed(4)} SOL*.\n\nPlease adjust your Trade Config so *Max Buy ≤ ${maxBotSol.toFixed(4)} SOL* before deploying.\n\nGo to ⚙️ Trade Settings to update.`,
-            { parse_mode: 'Markdown' }
-          );
+            `⚠️ *Trade Config Warning*\n\nMax Buy (${maxBuy} SOL) exceeds highest bot balance (${maxBotSol.toFixed(4)} SOL).\n\nAdjust in ⚙️ Trade Settings.`,
+            { parse_mode: 'Markdown' });
           return;
         }
-
-        if (insufficientBots === activeBuyersPreflight.length) {
+        if (allInsufficient) {
           await bot.sendMessage(chatId,
-            `⚠️ *Insufficient Bot Balances*\n\nAll selected bot wallets have less than *${(minBuy + feeBuffer).toFixed(4)} SOL* (min buy + fees).\n\nPlease fund your bot wallets or lower *Min Buy* in Trade Settings.`,
-            { parse_mode: 'Markdown' }
-          );
+            `⚠️ *Insufficient Bot Balances*\n\nAll bots have less than ${(minBuy + feeBuffer).toFixed(4)} SOL.\n\nFund wallets or lower Min Buy.`,
+            { parse_mode: 'Markdown' });
           return;
         }
       }
@@ -94,29 +95,20 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
 
     if (data.image_data && data.image_data.startsWith('data:image')) {
       const base64 = data.image_data.split(',')[1];
-      formData.append("file", Buffer.from(base64, 'base64'), {
-        filename: "token_image.png",
-        contentType: 'image/png'
-      });
+      formData.append("file", Buffer.from(base64, 'base64'), { filename: "token_image.png", contentType: 'image/png' });
     } else if (data.image || data.tokenImage) {
-      const imageSource = data.image || data.tokenImage;
       try {
-        const imageRes = await axios.get(imageSource, { responseType: 'arraybuffer' });
+        const imageRes = await axios.get(data.image || data.tokenImage, { responseType: 'arraybuffer' });
         formData.append("file", Buffer.from(imageRes.data), "token_image.png");
       } catch (imgErr) {
-        console.error('Image fetch error:', imgErr.message);
         throw new Error(`Failed to fetch token image: ${imgErr.message}`);
       }
     } else {
-      console.log('⚠️ No token image provided, using default placeholder');
-      const defaultImageBase64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
-      formData.append("file", Buffer.from(defaultImageBase64, 'base64'), {
-        filename: "token_image.png",
-        contentType: 'image/png'
-      });
+      const defaultPng = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+      formData.append("file", Buffer.from(defaultPng, 'base64'), { filename: "token_image.png", contentType: 'image/png' });
     }
 
-    // ---------------- METADATA ----------------
+    // ---------------- IPFS METADATA ----------------
     formData.append("name", tokenName);
     formData.append("symbol", symbol);
     formData.append("description", description);
@@ -128,148 +120,76 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     const ipfsResponse = await axios.post("https://pump.fun/api/ipfs", formData, {
       headers: {
         ...formData.getHeaders(),
-        'Origin':     'https://pump.fun',
-        'Referer':    'https://pump.fun/',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        'Origin': 'https://pump.fun', 'Referer': 'https://pump.fun/',
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       },
-      timeout: 15000,
+      timeout: 20000,
       validateStatus: () => true
     });
 
-    console.log('📥 IPFS response status:', ipfsResponse.status, '| data:', JSON.stringify(ipfsResponse.data)?.slice(0, 300));
+    console.log('📥 IPFS status:', ipfsResponse.status, JSON.stringify(ipfsResponse.data)?.slice(0, 200));
 
     if (ipfsResponse.status !== 200) {
-      const errBody = typeof ipfsResponse.data === 'object'
-        ? JSON.stringify(ipfsResponse.data)
-        : String(ipfsResponse.data);
-      throw new Error(`IPFS upload failed (${ipfsResponse.status}): ${errBody}`);
+      throw new Error(`IPFS upload failed (${ipfsResponse.status}): ${JSON.stringify(ipfsResponse.data)}`);
     }
-
     const metadataUri = ipfsResponse.data?.metadataUri;
-    if (!metadataUri) throw new Error(`IPFS upload returned no metadataUri: ${JSON.stringify(ipfsResponse.data)}`);
+    if (!metadataUri) throw new Error(`IPFS returned no metadataUri: ${JSON.stringify(ipfsResponse.data)}`);
 
-    // ---------------- PUMPPORTAL DEPLOYMENT ----------------
-    session.liveLogs.push({ status: 'processing', message: `🏗 Initializing Atomic Deployment for ${symbol}...` });
+    // ---------------- SDK DEPLOYMENT ----------------
+    session.liveLogs.push({ status: 'processing', message: `🏗 Initializing deployment for ${symbol}...` });
 
     const mintKeypair       = Keypair.generate();
     const mintAddress       = mintKeypair.publicKey.toBase58();
-    const mainWalletKeypair = Keypair.fromSecretKey(base58Decode(session.mainWallet.priv));
+    const mainKeypair       = Keypair.fromSecretKey(base58Decode(session.mainWallet.priv));
 
-    await editTerminal(`🏗 *Initializing Atomic Deployment...*\nCreating \`${tokenName}\` on Pump.fun and executing DEV buy of ${initialBuy} SOL...`);
+    await editTerminal(`🏗 *Deploying \`${tokenName}\` on Pump.fun...*\nDev buy: ${initialBuy} SOL`);
 
-    // Resolve active buyers for both Jito bundle and swarm
+    // Build SDK provider
+    const provider = new AnchorProvider(connection, makeWallet(mainKeypair), { commitment: 'confirmed' });
+    const sdk      = new PumpFunSDK(provider);
+
+    const tokenMetadata = {
+      name:        tokenName,
+      symbol:      symbol,
+      description: description,
+      file:        new Blob([Buffer.from(
+        data.image_data?.startsWith('data:image')
+          ? data.image_data.split(',')[1]
+          : 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
+        'base64'
+      )], { type: 'image/png' }),
+      twitter:  data.links?.twitter  || undefined,
+      telegram: data.links?.telegram || undefined,
+      website:  data.links?.website  || undefined,
+    };
+
+    // Resolve active buyers
     const activeBuyers = (autoBuyEnabled && selectedBotIds.length > 0)
       ? (session.buyers || []).filter((_, i) => selectedBotIds.includes(`bot-${i}`))
       : [];
 
-    // ----------------------------------------------------------------
-    // BUILD BUNDLE ARGS
-    // PumpPortal create action: always use denominatedInSol "true" + SOL amount
-    // This is the only format PumpPortal accepts for the "create" action
-    // ----------------------------------------------------------------
-    const createArg = {
-      publicKey:     session.mainWallet.address,
-      action:        "create",
-      tokenMetadata: { name: tokenName, symbol, uri: metadataUri },
-      mint:          mintAddress,
-      denominatedInSol: "true",          // MUST be true for create
-      amount:        initialBuy > 0 ? initialBuy : 0.0001, // min viable dev buy
-      slippage:      10,
-      priorityFee:   0.005,
-      pool:          "pump"
-    };
+    const devBuyLamports = BigInt(Math.floor((initialBuy > 0 ? initialBuy : 0.001) * LAMPORTS_PER_SOL));
 
-    const bundleArgs = [createArg];
+    console.log(`🚀 Calling SDK createAndBuy | mint: ${mintAddress} | devBuy: ${devBuyLamports} lamports`);
 
-    const tc     = session.tradeConfig || {};
-    const minBuy = tc.minBuy ?? 0.01;
-    const maxBuy = tc.maxBuy ?? 0.05;
-
-    let jitoBotBuyers = [];
-    if (jitoBundleEnabled && activeBuyers.length > 0) {
-      const slots = 5 - bundleArgs.length;
-      jitoBotBuyers = activeBuyers.slice(0, slots);
-      for (const buyer of jitoBotBuyers) {
-        const buyAmountSol = parseFloat((Math.random() * (maxBuy - minBuy) + minBuy).toFixed(6));
-        bundleArgs.push({
-          publicKey:        buyer.pub,
-          action:           "buy",
-          mint:             mintAddress,
-          denominatedInSol: "true",      // SOL amount — simpler and always accepted
-          amount:           buyAmountSol,
-          slippage:         tc.slippage ?? 10,
-          priorityFee:      0.005,
-          pool:             "pump"
-        });
+    const createResult = await sdk.createAndBuy(
+      mainKeypair,
+      mintKeypair,
+      tokenMetadata,
+      devBuyLamports,
+      BigInt(500), // 5% slippage in basis points
+      {
+        unitLimit:  250000,
+        unitPrice:  250000,
       }
+    );
+
+    if (!createResult.success) {
+      throw new Error(`SDK createAndBuy failed: ${createResult.error || 'unknown error'}`);
     }
 
-    // Fetch all unsigned txs from PumpPortal
-    console.log('📤 PumpPortal bundle payload:', JSON.stringify(bundleArgs, null, 2));
-    const response = await axios.post("https://pumpportal.fun/api/trade-local", bundleArgs, {
-      headers: { "Content-Type": "application/json" },
-      timeout: 15000,
-      validateStatus: () => true
-    });
-
-    console.log('📥 PumpPortal response status:', response.status, '| data:', JSON.stringify(response.data)?.slice(0, 200));
-
-    if (response.status !== 200) {
-      const errBody = Array.isArray(response.data?.data)
-        ? Buffer.from(response.data.data).toString()
-        : JSON.stringify(response.data);
-      throw new Error(`PumpPortal ${response.status}: ${errBody}`);
-    }
-
-    if (!Array.isArray(response.data) || response.data.length === 0) {
-      throw new Error(`Unexpected PumpPortal response: ${JSON.stringify(response.data)}`);
-    }
-
-    // Sign each tx with the correct keypair
-    const signedTxs = response.data.map((encodedTx, index) => {
-      const tx = VersionedTransaction.deserialize(base58Decode(encodedTx));
-      if (bundleArgs[index].action === "create") {
-        tx.sign([mintKeypair, mainWalletKeypair]);
-      } else if (bundleArgs[index].publicKey === session.mainWallet.address) {
-        tx.sign([mainWalletKeypair]);
-      } else {
-        const buyer = jitoBotBuyers.find(b => b.pub === bundleArgs[index].publicKey);
-        if (buyer) tx.sign([Keypair.fromSecretKey(base58Decode(buyer.priv))]);
-      }
-      return tx;
-    });
-
-    if (jitoBundleEnabled && signedTxs.length > 1) {
-      // ---- JITO BUNDLE PATH (multiple txs) ----
-      session.liveLogs.push({ status: 'processing', message: `✍️ Submitting Jito bundle (${signedTxs.length} txs)...` });
-
-      const encodedSignedTxs = signedTxs.map(tx => base58Encode(tx.serialize()));
-
-      const jitoResponse = await axios.post(
-        "https://mainnet.block-engine.jito.wtf/api/v1/bundles",
-        { jsonrpc: "2.0", id: 1, method: "sendBundle", params: [encodedSignedTxs] },
-        { headers: { "Content-Type": "application/json" }, timeout: 30000 }
-      );
-
-      const bundleId = jitoResponse.data?.result;
-      console.log(`✅ Jito bundle submitted: ${bundleId}`);
-      await new Promise(r => setTimeout(r, 8000));
-
-    } else {
-      // ---- DIRECT RPC PATH (create only, no bundle) ----
-      session.liveLogs.push({ status: 'processing', message: `📡 Sending create transaction...` });
-
-      const sig = await connection.sendRawTransaction(
-        signedTxs[0].serialize(),
-        { skipPreflight: false, preflightCommitment: 'confirmed' }
-      );
-      console.log(`📡 Create tx sent: ${sig}`);
-
-      await connection.confirmTransaction(sig, 'confirmed');
-      console.log(`✅ Create tx confirmed: ${sig}`);
-    }
-
-    session.liveLogs.push({ status: 'success', message: `🚀 Token Deployed!` });
+    console.log(`✅ Token created! Signature: ${createResult.signature}`);
+    session.liveLogs.push({ status: 'success', message: `🚀 Token Deployed! TX: ${createResult.signature?.slice(0, 16)}...` });
 
     await editTerminal(
       `✅ *Deployment Complete!*\n\n` +
@@ -292,40 +212,20 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
 
     session.liveLogs.push({ status: 'success', message: `🎉 ${symbol} deployed successfully!` });
 
-    // ---------------- SWARM BUY (non-Jito path) ----------------
-    const remainingBuyers = jitoBundleEnabled
-      ? activeBuyers.slice(jitoBotBuyers.length)
-      : activeBuyers;
-
-    if (remainingBuyers.length > 0) {
+    // ---------------- SWARM BUY (bot wallets) ----------------
+    if (activeBuyers.length > 0) {
       await editTerminal(
-        `🤖 *Swarm Engaged!*\n\n` +
-        `📍 Mint: \`${mintAddress}\`\n` +
-        `  *${remainingBuyers.length} bot wallets buying now...*`
+        `🤖 *Swarm Engaged!*\n\n📍 Mint: \`${mintAddress}\`\n🚀 *${activeBuyers.length} bot wallets buying now...*`
       );
       const originalBuyers = session.buyers;
-      session.buyers = remainingBuyers;
+      session.buyers = activeBuyers;
       await performRealTrading(bot, connection, session, chatId);
       session.buyers = originalBuyers;
     }
 
   } catch (err) {
     console.error('handleDeployRequest error:', err.message);
-    let msg = err.message;
-    if (err.response?.data) {
-      const d = err.response.data;
-      if (d?.type === 'Buffer' && Array.isArray(d.data)) {
-        msg = Buffer.from(d.data).toString();
-      } else if (Buffer.isBuffer(d)) {
-        msg = d.toString();
-      } else if (d instanceof ArrayBuffer || ArrayBuffer.isView(d)) {
-        msg = Buffer.from(d).toString();
-      } else {
-        msg = JSON.stringify(d);
-      }
-    }
-    console.error('Deployment error detail:', msg);
-    await bot.sendMessage(chatId, `❌ *Deployment Failed:*\n\`${msg}\``, { parse_mode: 'Markdown' });
+    await bot.sendMessage(chatId, `❌ *Deployment Failed:*\n\`${err.message}\``, { parse_mode: 'Markdown' });
   }
 }
 
@@ -379,7 +279,7 @@ async function getTokenBalance(connection, pubKey, mintAddress) {
 
 /**
  * ===============================
- *   TOKEN VALUE (SOL)
+ * 💸 TOKEN VALUE (SOL)
  * ===============================
  */
 async function getTokenValueInSol(connection, pubKey, mintAddress) {
@@ -395,34 +295,22 @@ async function getTokenValueInSol(connection, pubKey, mintAddress) {
  */
 async function sellTokenAmount(bot, connection, buyer, sellAmount, contractAddress, chatId, walletIndex) {
   try {
-    const res = await axios.post('https://pumpportal.fun/api/trade-local', {
-      publicKey:        buyer.pub,
-      action:           "sell",
-      mint:             contractAddress,
-      amount:           sellAmount,
-      denominatedInSol: "false",
-      slippage:         10,
-      priorityFee:      0.005,
-      pool:             "pump"
-    }, {
-      headers: { "Content-Type": "application/json" },
-      validateStatus: () => true
-    });
+    const buyerKeypair = Keypair.fromSecretKey(base58Decode(buyer.priv));
+    const provider     = new AnchorProvider(connection, makeWallet(buyerKeypair), { commitment: 'confirmed' });
+    const sdk          = new PumpFunSDK(provider);
 
-    if (res.status !== 200) {
-      throw new Error(`PumpPortal sell ${res.status}: ${JSON.stringify(res.data)?.slice(0, 200)}`);
+    const sellAmountBigInt = BigInt(Math.floor(sellAmount * 1e6)); // token amount in raw units
+    const result = await sdk.sell(
+      buyerKeypair,
+      new PublicKey(contractAddress),
+      sellAmountBigInt,
+      BigInt(500), // 5% slippage
+      { unitLimit: 250000, unitPrice: 250000 }
+    );
+
+    if (!result.success) {
+      throw new Error(`SDK sell failed: ${result.error || 'unknown'}`);
     }
-
-    // PumpPortal returns a single base58-encoded tx string for single trades
-    const encoded = Array.isArray(res.data) ? res.data[0] : res.data;
-    if (!encoded || typeof encoded !== 'string') {
-      throw new Error(`Unexpected sell response: ${JSON.stringify(res.data)}`);
-    }
-
-    const tx = VersionedTransaction.deserialize(base58Decode(encoded));
-    tx.sign([Keypair.fromSecretKey(base58Decode(buyer.priv))]);
-
-    await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
 
     return await getBalance(connection, buyer.pub);
   } catch (err) {
@@ -431,11 +319,6 @@ async function sellTokenAmount(bot, connection, buyer, sellAmount, contractAddre
   }
 }
 
-/**
- * ===============================
- *   EXPORTS
- * ===============================
- */
 module.exports = {
   handleDeployRequest,
   getBalance,
