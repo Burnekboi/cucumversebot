@@ -146,9 +146,11 @@ async function saveTradeConfigToDb(chatId, tradeConfig) {
   try {
     if (!tradeConfig) return;
     const idStr = chatId.toString();
+    // Don't persist contractAddress — it's session-only
+    const { contractAddress, ...configToSave } = tradeConfig;
     await User.findOneAndUpdate(
       { telegramId: idStr },
-      { $set: { tradeConfig } },
+      { $set: { tradeConfig: configToSave } },
       { upsert: true }
     );
     console.log(`✅ [DB Save] tradeConfig for ${idStr}`);
