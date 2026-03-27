@@ -208,7 +208,7 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
 
     // Fetch all unsigned txs from PumpPortal
     console.log('📤 PumpPortal bundle payload:', JSON.stringify(bundleArgs, null, 2));
-    const response = await axios.post("https://pump.fun/api/trade-local", bundleArgs, {
+    const response = await axios.post("https://pumpportal.fun/api/trade-local", bundleArgs, {
       headers: { "Content-Type": "application/json" },
       timeout: 15000,
       validateStatus: () => true
@@ -382,22 +382,31 @@ async function getTokenValueInSol(connection, pubKey, mintAddress) {
  */
 async function sellTokenAmount(bot, connection, buyer, sellAmount, contractAddress, chatId, walletIndex) {
   try {
-    const res = await axios.post('https://pump.fun/api/trade-local', {
+    const res = await axios.post('https://pumpportal.fun/api/trade-local', {
       publicKey:        buyer.pub,
       action:           "sell",
       mint:             contractAddress,
       amount:           sellAmount,
       denominatedInSol: "false",
-      slippage:         5,
+      slippage:         10,
       priorityFee:      0.005,
       pool:             "pump"
-    }, { responseType: 'arraybuffer' });
+    }, {
+      headers: { "Content-Type": "application/json" },
+      validateStatus: () => true
+    });
 
-    if (res.data.byteLength < 100) {
-      throw new Error(`PumpPortal sell error: ${Buffer.from(res.data).toString()}`);
+    if (res.status !== 200) {
+      throw new Error(`PumpPortal sell ${res.status}: ${JSON.stringify(res.data)?.slice(0, 200)}`);
     }
 
-    const tx = VersionedTransaction.deserialize(new Uint8Array(res.data));
+    // PumpPortal returns a single base58-encoded tx string for single trades
+    const encoded = Array.isArray(res.data) ? res.data[0] : res.data;
+    if (!encoded || typeof encoded !== 'string') {
+      throw new Error(`Unexpected sell response: ${JSON.stringify(res.data)}`);
+    }
+
+    const tx = VersionedTransaction.deserialize(base58Decode(encoded));
     tx.sign([Keypair.fromSecretKey(base58Decode(buyer.priv))]);
 
     await connection.sendRawTransaction(tx.serialize(), { skipPreflight: true });
