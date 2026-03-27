@@ -28,7 +28,7 @@ mongoose.connect(process.env.MONGO_URI)
 const WEBHOOK_URL = process.env.WEBHOOK_URL; // e.g. https://your-app.railway.app
 const WEBHOOK_PATH = `/webhook/${process.env.BOT_TOKEN}`;
 
-const bot = new TelegramBot(process.env.BOT_TOKEN, { webHook: false });
+const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: false });
 
 // Split multi-RPC string and helper for random connection
 const rpcList = (process.env.RPC_URL || "https://api.mainnet-beta.solana.com").split(',').map(url => url.trim());
