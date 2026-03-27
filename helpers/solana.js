@@ -123,10 +123,15 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     formData.append("showName", "true");
 
     const ipfsResponse = await axios.post(
-      "https://pumpportal.fun/api/ipfs",
+      "https://pump.fun/api/ipfs",
       formData,
       {
-        headers: { ...formData.getHeaders() },
+        headers: {
+          ...formData.getHeaders(),
+          'Origin': 'https://pump.fun',
+          'Referer': 'https://pump.fun/',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+        },
         validateStatus: () => true
       }
     );
