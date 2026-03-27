@@ -22,7 +22,23 @@ mongoose.connect(process.env.MONGO_URI)
 /* =====================================================
    BOT + SMART RPC CONNECTION
 ===================================================== */
-const bot = new TelegramBot(process.env.BOT_TOKEN, { polling: true });
+const bot = new TelegramBot(process.env.BOT_TOKEN, {
+  polling: {
+    autoStart: true,
+    params: { timeout: 10 }
+  }
+});
+
+bot.on('polling_error', (err) => {
+  if (err.code === 'ETELEGRAM' && err.message.includes('409')) {
+    console.warn('⚠️ Another bot instance is running. Restarting polling in 5s...');
+    setTimeout(() => {
+      bot.stopPolling().then(() => bot.startPolling()).catch(() => {});
+    }, 5000);
+  } else {
+    console.error('Polling error:', err.message);
+  }
+});
 
 // Split multi-RPC string and helper for random connection
 const rpcList = (process.env.RPC_URL || "https://api.mainnet-beta.solana.com").split(',').map(url => url.trim());
@@ -210,10 +226,23 @@ app.post('/api/deploy', async (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`\n=====================================================`);
   console.log(`🚀 CUCUMVERSE API SERVER LIVE ON PORT ${PORT}`);
   console.log(`=====================================================\n`);
+});
+
+// Graceful shutdown — ensures bot polling stops cleanly before Railway kills the process
+// This prevents the 409 Conflict on the next deploy
+process.once('SIGTERM', async () => {
+  console.log('🛑 SIGTERM received — shutting down gracefully...');
+  await bot.stopPolling().catch(() => {});
+  server.close(() => process.exit(0));
+});
+
+process.once('SIGINT', async () => {
+  await bot.stopPolling().catch(() => {});
+  server.close(() => process.exit(0));
 });
 
 /* =====================================================
