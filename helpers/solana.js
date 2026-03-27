@@ -202,19 +202,23 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
 
     // ---------------- SWARM BUY ----------------
     if (autoBuyEnabled && selectedBotIds.length > 0) {
-      const activeBuyers = (session.buyers || []).filter(b =>
-        selectedBotIds.includes(b.id)
+      // bot_fleet contains ids like "bot-0", "bot-1" — match by index
+      const activeBuyers = (session.buyers || []).filter((_, index) =>
+        selectedBotIds.includes(`bot-${index}`)
       );
 
       if (activeBuyers.length > 0) {
         await editTerminal(
-          `✅ **Sequence Complete! Swarm Engaged** 🤖\n\n` +
+          `✅ *Deployment Complete! Swarm Engaged* 🤖\n\n` +
           `💰 Initial Buy: ${initialBuy} SOL\n` +
           `📍 Mint: \`${mintAddress}\`\n` +
           `🔗 [Pump.fun](https://pump.fun/${mintAddress})\n` +
           `🔗 Tx: \`https://solscan.io/tx/${signature}\`\n\n` +
-          `🚀 **Targeting Swarm Buy** for ${activeBuyers.length} sub-wallets based on your Trade Config...`
+          `🚀 *Swarm buying with ${activeBuyers.length} wallets...*`
         );
+
+        // Wait for deploy tx to confirm before bots try to buy
+        await connection.confirmTransaction(signature, 'confirmed').catch(() => {});
 
         const originalBuyers = session.buyers;
         session.buyers = activeBuyers;
@@ -332,26 +336,29 @@ async function sellTokenAmount(
   walletIndex
 ) {
   try {
-    const body = {
+    const body = [{
       publicKey: buyer.pub,
       action: "sell",
       mint: contractAddress,
       amount: sellAmount,
-      denominatedInSol: false,
+      denominatedInSol: "false",
       slippage: 5,
-      priorityFee: 0.003,
+      priorityFee: 0.005,
       pool: "auto"
-    };
+    }];
 
     const res = await axios.post(
       'https://pumpportal.fun/api/trade-local',
       body,
-      { responseType: 'arraybuffer' }
+      { headers: { 'Content-Type': 'application/json' } }
     );
 
-    const tx = VersionedTransaction.deserialize(
-      new Uint8Array(res.data)
-    );
+    const encodedTx = Array.isArray(res.data) ? res.data[0] : res.data;
+    if (!encodedTx || typeof encodedTx !== 'string') {
+      throw new Error(`Bad PumpPortal response: ${JSON.stringify(res.data)}`);
+    }
+
+    const tx = VersionedTransaction.deserialize(base58Decode(encodedTx));
 
     const buyerKey = buyer.priv;
 
