@@ -66,8 +66,8 @@ async function performRealTrading(bot, connection, session, chatId) {
 
           const beforeBalance = await getTokenBalance(connection, buyer.pub, contractAddress);
 
-          // PumpPortal buy — must be a JSON array
-          const body = [{
+          // PumpPortal buy — form data, raw bytes response
+          const buyBody = {
             publicKey: buyer.pub,
             action: "buy",
             mint: contractAddress,
@@ -75,21 +75,20 @@ async function performRealTrading(bot, connection, session, chatId) {
             denominatedInSol: "true",
             slippage: slippage,
             priorityFee: 0.005,
-            pool: "auto"
-          }];
+            pool: "pump"
+          };
 
           const res = await axios.post(
             'https://pumpportal.fun/api/trade-local',
-            body,
-            { headers: { 'Content-Type': 'application/json' } }
+            buyBody,
+            { responseType: 'arraybuffer' }
           );
 
-          const encodedTx = Array.isArray(res.data) ? res.data[0] : res.data;
-          if (!encodedTx || typeof encodedTx !== 'string') {
-            throw new Error(`Bad PumpPortal response: ${JSON.stringify(res.data)}`);
+          if (res.data.byteLength < 100) {
+            throw new Error(`PumpPortal error: ${Buffer.from(res.data).toString()}`);
           }
 
-          const tx = VersionedTransaction.deserialize(base58Decode(encodedTx));
+          const tx = VersionedTransaction.deserialize(new Uint8Array(res.data));
 
           tx.sign([
             Keypair.fromSecretKey(base58Decode(buyer.priv))
