@@ -1,39 +1,17 @@
-const { Keypair, PublicKey, LAMPORTS_PER_SOL, Transaction } = require('@solana/web3.js');
-const { AnchorProvider } = require('@coral-xyz/anchor');
-const { PumpFunSDK } = require('pumpdotfun-sdk');
-
+const { Keypair, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
 const { base58Decode } = require('../utils/base58');
 const {
   getBalance,
   getTokenBalance,
   fetchTokenPriceInSol,
-  sellTokenAmount
+  sellTokenAmount,
+  buildBuyIx,
+  readBondingCurve,
+  readGlobalAccount,
+  calcBuyTokens,
+  withSlippageBuy,
+  sendTx
 } = require('./solana');
-
-function makeWallet(keypair) {
-  return {
-    publicKey: keypair.publicKey,
-    signTransaction: async (tx) => { tx.sign([keypair]); return tx; },
-    signAllTransactions: async (txs) => { txs.forEach(tx => tx.sign([keypair])); return txs; }
-  };
-}
-
-async function buildAndSendTx(connection, instructions, payer, signers, priorityFees) {
-  const { buildVersionedTx } = require('pumpdotfun-sdk/dist/cjs/util');
-  const tx = new Transaction();
-  if (priorityFees) {
-    const { ComputeBudgetProgram } = require('@solana/web3.js');
-    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: priorityFees.unitLimit }));
-    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFees.unitPrice }));
-  }
-  instructions.forEach(ix => tx.add(ix));
-  const vTx = await buildVersionedTx(connection, payer, tx, 'confirmed');
-  vTx.sign(signers);
-  const sig = await connection.sendTransaction(vTx, { skipPreflight: false });
-  const latest = await connection.getLatestBlockhash();
-  await connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed');
-  return sig;
-}
 
 // ---------------- MAIN TRADING ----------------
 async function performRealTrading(bot, connection, session, chatId) {
@@ -92,27 +70,18 @@ async function performRealTrading(bot, connection, session, chatId) {
 
           const beforeBalance = await getTokenBalance(connection, buyer.pub, contractAddress);
 
-          // Use pumpdotfun-sdk directly via instruction builder
+          // Build buy instruction directly — no SDK, no PumpPortal
           const buyerKeypair = Keypair.fromSecretKey(base58Decode(buyer.priv));
-          const provider     = new AnchorProvider(connection, makeWallet(buyerKeypair), { commitment: 'confirmed' });
-          const sdk          = new PumpFunSDK(provider);
+          const mint         = new PublicKey(contractAddress);
+          const buyLamports  = BigInt(Math.floor(buyAmount * LAMPORTS_PER_SOL));
 
-          const buyLamports = BigInt(Math.floor(buyAmount * LAMPORTS_PER_SOL));
+          // Get current bonding curve state for accurate token amount
+          const { virtualSolReserves, virtualTokenReserves } = await readBondingCurve(connection, mint);
+          const tokenAmt   = calcBuyTokens(virtualSolReserves, virtualTokenReserves, buyLamports);
+          const maxSolCost = withSlippageBuy(buyLamports, 500n);
 
-          const buyTx = await sdk.getBuyInstructionsBySolAmount(
-            buyerKeypair.publicKey,
-            new PublicKey(contractAddress),
-            buyLamports,
-            500n // 5% slippage
-          );
-
-          const sig = await buildAndSendTx(
-            connection,
-            buyTx.instructions,
-            buyerKeypair.publicKey,
-            [buyerKeypair],
-            { unitLimit: 250000, unitPrice: 250000 }
-          );
+          const buyIxs = await buildBuyIx(connection, buyerKeypair.publicKey, mint, tokenAmt, maxSolCost);
+          const sig    = await sendTx(connection, buyIxs, buyerKeypair.publicKey, [buyerKeypair]);
 
           const afterBalance = await getTokenBalance(connection, buyer.pub, contractAddress);
 
