@@ -34,7 +34,7 @@ async function buildAndSendTx(connection, instructions, payer, signers, priority
   instructions.forEach(ix => tx.add(ix));
   const vTx = await buildVersionedTx(connection, payer, tx, 'confirmed');
   vTx.sign(signers);
-  const sig = await connection.sendTransaction(vTx, { skipPreflight: false });
+  const sig = await connection.sendTransaction(vTx, { skipPreflight: true });
   const latest = await connection.getLatestBlockhash();
   await connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed');
   return sig;
@@ -370,13 +370,22 @@ async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount,
   const provider = new AnchorProvider(connection, dummyWallet, { commitment: 'confirmed' });
   const sdk = new PumpFunSDK(provider);
   
-  return await sdk.getBuyInstructions(
-    userPublicKey,
-    mint,
-    creator,
-    tokenAmount,
-    maxSolCost
-  );
+  try {
+    // Get the global account for fee recipient
+    const globalAccount = await sdk.getGlobalAccount('confirmed');
+    
+    // Use the SDK's getBuyInstructions with proper parameters
+    return await sdk.getBuyInstructions(
+      userPublicKey,
+      mint,
+      globalAccount.feeRecipient,
+      tokenAmount,
+      maxSolCost
+    );
+  } catch (err) {
+    console.error('buildBuyInstruction error:', err.message);
+    throw err;
+  }
 }
 
 /**
