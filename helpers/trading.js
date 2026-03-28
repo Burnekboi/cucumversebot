@@ -1,4 +1,4 @@
-const { Keypair, PublicKey, LAMPORTS_PER_SOL } = require('@solana/web3.js');
+const { Keypair, PublicKey, LAMPORTS_PER_SOL, Transaction } = require('@solana/web3.js');
 const { AnchorProvider } = require('@coral-xyz/anchor');
 const { PumpFunSDK } = require('pumpdotfun-sdk');
 
@@ -16,6 +16,23 @@ function makeWallet(keypair) {
     signTransaction: async (tx) => { tx.sign([keypair]); return tx; },
     signAllTransactions: async (txs) => { txs.forEach(tx => tx.sign([keypair])); return txs; }
   };
+}
+
+async function buildAndSendTx(connection, instructions, payer, signers, priorityFees) {
+  const { buildVersionedTx } = require('pumpdotfun-sdk/dist/cjs/util');
+  const tx = new Transaction();
+  if (priorityFees) {
+    const { ComputeBudgetProgram } = require('@solana/web3.js');
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: priorityFees.unitLimit }));
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFees.unitPrice }));
+  }
+  instructions.forEach(ix => tx.add(ix));
+  const vTx = await buildVersionedTx(connection, payer, tx, 'confirmed');
+  vTx.sign(signers);
+  const sig = await connection.sendTransaction(vTx, { skipPreflight: false });
+  const latest = await connection.getLatestBlockhash();
+  await connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed');
+  return sig;
 }
 
 // ---------------- MAIN TRADING ----------------
@@ -75,24 +92,27 @@ async function performRealTrading(bot, connection, session, chatId) {
 
           const beforeBalance = await getTokenBalance(connection, buyer.pub, contractAddress);
 
-          // Use pumpdotfun-sdk directly — PumpPortal local API is unreliable
+          // Use pumpdotfun-sdk directly via instruction builder
           const buyerKeypair = Keypair.fromSecretKey(base58Decode(buyer.priv));
           const provider     = new AnchorProvider(connection, makeWallet(buyerKeypair), { commitment: 'confirmed' });
           const sdk          = new PumpFunSDK(provider);
 
           const buyLamports = BigInt(Math.floor(buyAmount * LAMPORTS_PER_SOL));
 
-          const result = await sdk.buy(
-            buyerKeypair,
+          const buyTx = await sdk.getBuyInstructionsBySolAmount(
+            buyerKeypair.publicKey,
             new PublicKey(contractAddress),
             buyLamports,
-            BigInt(500), // 5% slippage in basis points
-            { unitLimit: 250000, unitPrice: 250000 }
+            500n // 5% slippage
           );
 
-          if (!result.success) {
-            throw new Error(`SDK buy failed: ${result.error || 'unknown'}`);
-          }
+          const sig = await buildAndSendTx(
+            connection,
+            buyTx.instructions,
+            buyerKeypair.publicKey,
+            [buyerKeypair],
+            { unitLimit: 250000, unitPrice: 250000 }
+          );
 
           const afterBalance = await getTokenBalance(connection, buyer.pub, contractAddress);
 
