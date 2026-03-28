@@ -14,6 +14,7 @@ const {
 // ---------------- MAIN TRADING ----------------
 async function performRealTrading(bot, connection, session, chatId) {
   const { contractAddress, minBuy, maxBuy, slippage } = session.tradeConfig;
+  const jitoBundleEnabled = session.jitoBundle || false; // Bot wallet Jito setting
 
   if (!contractAddress) {
     await bot.sendMessage(chatId, '❌ Contract address not set.');
@@ -22,6 +23,19 @@ async function performRealTrading(bot, connection, session, chatId) {
 
   session.liveLogs = [];
   session.isTrading = true;
+
+  // Check if there are bot wallets
+  if (!session.buyers || session.buyers.length === 0) {
+    session.liveLogs.push({ status: 'warning', message: 'Bot wallets is disabled' });
+    session.isTrading = false;
+    return;
+  }
+
+  // Add initial trading message
+  session.liveLogs.push({ 
+    status: 'processing', 
+    message: jitoBundleEnabled ? 'initiating bot wallet buying atomic transaction' : 'initiating bot wallet buying...' 
+  });
 
   const batchSize = 5;
 
@@ -100,7 +114,7 @@ async function performRealTrading(bot, connection, session, chatId) {
           logEntry.solBought = buyAmount.toFixed(4);
           logEntry.tokenAmount = tokenReceived.toFixed(2);
           logEntry.solBal = solLeft.toFixed(4);
-          logEntry.message = `✅ Wallet #${walletIndex + 1} Success`;
+          logEntry.message = `#bot ${walletIndex + 1}\n  Sol Amount: ${buyAmount.toFixed(4)} SOL\n  Tokens: ${tokenReceived.toFixed(2)} tokens`;
 
           buyer.trade = {
             entryPricePerToken: buyAmount / tokenReceived,
@@ -115,7 +129,7 @@ async function performRealTrading(bot, connection, session, chatId) {
 
           if (attempts >= maxRetries) {
             logEntry.status = 'failed';
-            logEntry.message = `wallet ${walletIndex + 1} (max retries reached)`;
+            logEntry.message = `#bot ${walletIndex + 1}\n  Failed transaction!`;
           } else {
             await new Promise(r => setTimeout(r, 1000));
           }
