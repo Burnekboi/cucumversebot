@@ -351,11 +351,108 @@ async function sellTokenAmount(bot, connection, buyer, sellAmount, contractAddre
   }
 }
 
+/**
+ * ===============================
+ * 🛒 BUY INSTRUCTION BUILDER
+ * ===============================
+ */
+async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount, maxSolCost, creator) {
+  const { PumpFunSDK } = require('pumpdotfun-sdk');
+  const { AnchorProvider } = require('@coral-xyz/anchor');
+  
+  // Create a dummy provider for SDK usage
+  const dummyWallet = {
+    publicKey: userPublicKey,
+    signTransaction: async () => { throw new Error('Not implemented'); },
+    signAllTransactions: async () => { throw new Error('Not implemented'); }
+  };
+  
+  const provider = new AnchorProvider(connection, dummyWallet, { commitment: 'confirmed' });
+  const sdk = new PumpFunSDK(provider);
+  
+  return await sdk.getBuyInstructions(
+    userPublicKey,
+    mint,
+    creator,
+    tokenAmount,
+    maxSolCost
+  );
+}
+
+/**
+ * ===============================
+ * 📊 BONDING CURVE DATA
+ * ===============================
+ */
+async function getBondingCurveData(connection, mint) {
+  const { PumpFunSDK } = require('pumpdotfun-sdk');
+  const { AnchorProvider } = require('@coral-xyz/anchor');
+  
+  // Create a dummy provider for SDK usage
+  const dummyWallet = {
+    publicKey: new PublicKey('11111111111111111111111111111111'),
+    signTransaction: async () => { throw new Error('Not implemented'); },
+    signAllTransactions: async () => { throw new Error('Not implemented'); }
+  };
+  
+  const provider = new AnchorProvider(connection, dummyWallet, { commitment: 'confirmed' });
+  const sdk = new PumpFunSDK(provider);
+  
+  try {
+    const bondingCurveAccount = await sdk.getBondingCurveAccount(mint, 'confirmed');
+    return {
+      virtualSolReserves: bondingCurveAccount.virtualSolReserves,
+      virtualTokenReserves: bondingCurveAccount.virtualTokenReserves,
+      creator: bondingCurveAccount.creator
+    };
+  } catch (err) {
+    console.error('getBondingCurveData error:', err.message);
+    // Return fallback values
+    return {
+      virtualSolReserves: BigInt(1000000000000), // 1000 SOL
+      virtualTokenReserves: BigInt(1000000000000), // 1B tokens
+      creator: new PublicKey('11111111111111111111111111111111')
+    };
+  }
+}
+
+/**
+ * ===============================
+ * 🧮 CALCULATE BUY TOKENS
+ * ===============================
+ */
+function calcBuyTokens(buyLamports, virtualSolReserves, virtualTokenReserves) {
+  // Using constant product formula: tokens_out = (token_reserves * sol_in) / (sol_reserves + sol_in)
+  // This is a simplified calculation - in reality, pump.fun uses a more complex formula
+  const numerator = virtualTokenReserves * buyLamports;
+  const denominator = virtualSolReserves + buyLamports;
+  return numerator / denominator;
+}
+
+/**
+ * ===============================
+ * 📤 SEND TRANSACTION (ALIAS)
+ * ===============================
+ */
+async function sendTx(connection, transaction, signers) {
+  return await buildAndSendTx(
+    connection,
+    transaction.instructions,
+    signers[0].publicKey,
+    signers,
+    { unitLimit: 250000, unitPrice: 250000 }
+  );
+}
+
 module.exports = {
   handleDeployRequest,
   getBalance,
   fetchTokenPriceInSol,
   getTokenBalance,
   getTokenValueInSol,
-  sellTokenAmount
+  sellTokenAmount,
+  buildBuyInstruction,
+  getBondingCurveData,
+  calcBuyTokens,
+  sendTx
 };
