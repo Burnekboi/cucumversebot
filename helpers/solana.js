@@ -223,40 +223,49 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     await new Promise(resolve => setTimeout(resolve, 2000));
 
     // Now do the dev buy if needed
+    let devBuySuccess = false;
     if (devBuyLamports > 0n) {
-      const globalAccount = await sdk.getGlobalAccount('confirmed');
-      const buyAmount = globalAccount.getInitialBuyPrice(devBuyLamports);
-      const { calculateWithSlippageBuy } = require('pumpdotfun-sdk/dist/cjs/util');
-      const buyAmountWithSlippage = calculateWithSlippageBuy(devBuyLamports, 500n);
-      
-      const buyTx = await sdk.getBuyInstructions(
-        mainKeypair.publicKey,
-        mintKeypair.publicKey,
-        globalAccount.feeRecipient,
-        buyAmount,
-        buyAmountWithSlippage
-      );
+      try {
+        const globalAccount = await sdk.getGlobalAccount('confirmed');
+        const buyAmount = globalAccount.getInitialBuyPrice(devBuyLamports);
+        const { calculateWithSlippageBuy } = require('pumpdotfun-sdk/dist/cjs/util');
+        const buyAmountWithSlippage = calculateWithSlippageBuy(devBuyLamports, 500n);
+        
+        const buyTx = await sdk.getBuyInstructions(
+          mainKeypair.publicKey,
+          mintKeypair.publicKey,
+          globalAccount.feeRecipient,
+          buyAmount,
+          buyAmountWithSlippage
+        );
 
-      console.log(`🚀 Sending dev buy tx`);
-      
-      const buySig = await buildAndSendTx(
-        connection,
-        [buyTx],
-        mainKeypair.publicKey,
-        [mainKeypair],
-        priorityFees
-      );
+        console.log(`🚀 Sending dev buy tx`);
+        
+        const buySig = await buildAndSendTx(
+          connection,
+          [buyTx],
+          mainKeypair.publicKey,
+          [mainKeypair],
+          priorityFees
+        );
 
-      console.log(`✅ Dev buy completed! Signature: ${buySig}`);
-      session.liveLogs.push({ status: 'success', message: `  Dev Buy Completed! TX: ${buySig.slice(0, 16)}...` });
+        console.log(`✅ Dev buy completed! Signature: ${buySig}`);
+        session.liveLogs.push({ status: 'success', message: `💰 Dev Buy Completed! TX: ${buySig.slice(0, 16)}...` });
+        devBuySuccess = true;
+      } catch (buyErr) {
+        console.error('Dev buy failed:', buyErr.message);
+        session.liveLogs.push({ status: 'warning', message: `⚠️ Dev buy failed: ${buyErr.message}` });
+        // Don't throw error - token was still created successfully
+      }
     }
 
-    session.liveLogs.push({ status: 'completed', message: `✅ Deployment finished successfully!` });
+    // Always show success if token was created, even if dev buy failed
+    session.liveLogs.push({ status: 'completed', message: `✅ ${symbol} token created successfully! Look for contract in dashboard!` });
 
     await editTerminal(
       `✅ *Deployment Complete!*\n\n` +
-      `💰 Dev Buy: ${initialBuy} SOL\n` +
-      `📍 Mint: \`${mintAddress}\`\n` +
+      `  Mint: \`${mintAddress}\`\n` +
+      ` 💰 Dev Buy: ${devBuySuccess ? `${initialBuy} SOL ✅` : `${initialBuy} SOL ❌`}\n` +
       `🔗 [Pump.fun](https://pump.fun/${mintAddress})`
     );
 
