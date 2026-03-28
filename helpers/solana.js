@@ -6,7 +6,7 @@ const { AnchorProvider } = require('@coral-xyz/anchor');
 const {
   PublicKey,
   LAMPORTS_PER_SOL,
-  VersionedTransaction,
+  Transaction,
   Keypair,
   Connection
 } = require('@solana/web3.js');
@@ -20,6 +20,24 @@ function makeWallet(keypair) {
     signTransaction: async (tx) => { tx.sign([keypair]); return tx; },
     signAllTransactions: async (txs) => { txs.forEach(tx => tx.sign([keypair])); return txs; }
   };
+}
+
+// Build and send a versioned transaction using the SDK's internal helpers
+async function buildAndSendTx(connection, instructions, payer, signers, priorityFees) {
+  const { buildVersionedTx } = require('pumpdotfun-sdk/dist/cjs/util');
+  const tx = new Transaction();
+  if (priorityFees) {
+    const { ComputeBudgetProgram } = require('@solana/web3.js');
+    tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: priorityFees.unitLimit }));
+    tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: priorityFees.unitPrice }));
+  }
+  instructions.forEach(ix => tx.add(ix));
+  const vTx = await buildVersionedTx(connection, payer, tx, 'confirmed');
+  vTx.sign(signers);
+  const sig = await connection.sendTransaction(vTx, { skipPreflight: false });
+  const latest = await connection.getLatestBlockhash();
+  await connection.confirmTransaction({ signature: sig, ...latest }, 'confirmed');
+  return sig;
 }
 
 /**
@@ -138,30 +156,27 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     // ---------------- SDK DEPLOYMENT ----------------
     session.liveLogs.push({ status: 'processing', message: `🏗 Initializing deployment for ${symbol}...` });
 
-    const mintKeypair       = Keypair.generate();
-    const mintAddress       = mintKeypair.publicKey.toBase58();
-    const mainKeypair       = Keypair.fromSecretKey(base58Decode(session.mainWallet.priv));
+    const mintKeypair   = Keypair.generate();
+    const mintAddress   = mintKeypair.publicKey.toBase58();
+    const mainKeypair   = Keypair.fromSecretKey(base58Decode(session.mainWallet.priv));
 
     await editTerminal(`🏗 *Deploying \`${tokenName}\` on Pump.fun...*\nDev buy: ${initialBuy} SOL`);
 
-    // Build SDK provider
+    // Build SDK provider — uses our own RPC, no PumpPortal dependency
     const provider = new AnchorProvider(connection, makeWallet(mainKeypair), { commitment: 'confirmed' });
     const sdk      = new PumpFunSDK(provider);
 
-    const tokenMetadata = {
-      name:        tokenName,
-      symbol:      symbol,
-      description: description,
-      file:        new Blob([Buffer.from(
-        data.image_data?.startsWith('data:image')
-          ? data.image_data.split(',')[1]
-          : 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==',
-        'base64'
-      )], { type: 'image/png' }),
-      twitter:  data.links?.twitter  || undefined,
-      telegram: data.links?.telegram || undefined,
-      website:  data.links?.website  || undefined,
-    };
+    const priorityFees = { unitLimit: 250000, unitPrice: 250000 };
+
+    // Use getCreateInstructions with our already-uploaded metadataUri
+    // This bypasses the SDK's createTokenMetadata() which uses browser fetch/FormData
+    const createTx = await sdk.getCreateInstructions(
+      mainKeypair.publicKey,
+      tokenName,
+      symbol,
+      metadataUri,
+      mintKeypair
+    );
 
     // Resolve active buyers
     const activeBuyers = (autoBuyEnabled && selectedBotIds.length > 0)
@@ -170,26 +185,36 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
 
     const devBuyLamports = BigInt(Math.floor((initialBuy > 0 ? initialBuy : 0.001) * LAMPORTS_PER_SOL));
 
-    console.log(`🚀 Calling SDK createAndBuy | mint: ${mintAddress} | devBuy: ${devBuyLamports} lamports`);
+    // Build combined create + dev buy transaction
+    const combinedTx = new Transaction().add(createTx);
 
-    const createResult = await sdk.createAndBuy(
-      mainKeypair,
-      mintKeypair,
-      tokenMetadata,
-      devBuyLamports,
-      BigInt(500), // 5% slippage in basis points
-      {
-        unitLimit:  250000,
-        unitPrice:  250000,
-      }
-    );
-
-    if (!createResult.success) {
-      throw new Error(`SDK createAndBuy failed: ${createResult.error || 'unknown error'}`);
+    if (devBuyLamports > 0n) {
+      const globalAccount = await sdk.getGlobalAccount('confirmed');
+      const buyAmount             = globalAccount.getInitialBuyPrice(devBuyLamports);
+      const { calculateWithSlippageBuy } = require('pumpdotfun-sdk/dist/cjs/util');
+      const buyAmountWithSlippage = calculateWithSlippageBuy(devBuyLamports, 500n);
+      const buyTx = await sdk.getBuyInstructions(
+        mainKeypair.publicKey,
+        mintKeypair.publicKey,
+        globalAccount.feeRecipient,
+        buyAmount,
+        buyAmountWithSlippage
+      );
+      combinedTx.add(buyTx);
     }
 
-    console.log(`✅ Token created! Signature: ${createResult.signature}`);
-    session.liveLogs.push({ status: 'success', message: `🚀 Token Deployed! TX: ${createResult.signature?.slice(0, 16)}...` });
+    console.log(`🚀 Sending create tx | mint: ${mintAddress} | devBuy: ${devBuyLamports} lamports`);
+
+    const sig = await buildAndSendTx(
+      connection,
+      combinedTx.instructions,
+      mainKeypair.publicKey,
+      [mainKeypair, mintKeypair],
+      priorityFees
+    );
+
+    console.log(`✅ Token created! Signature: ${sig}`);
+    session.liveLogs.push({ status: 'success', message: `🚀 Token Deployed! TX: ${sig.slice(0, 16)}...` });
 
     await editTerminal(
       `✅ *Deployment Complete!*\n\n` +
@@ -299,19 +324,26 @@ async function sellTokenAmount(bot, connection, buyer, sellAmount, contractAddre
     const provider     = new AnchorProvider(connection, makeWallet(buyerKeypair), { commitment: 'confirmed' });
     const sdk          = new PumpFunSDK(provider);
 
-    const sellAmountBigInt = BigInt(Math.floor(sellAmount * 1e6)); // token amount in raw units
-    const result = await sdk.sell(
-      buyerKeypair,
+    // sellAmount is in UI token units (e.g. 1000.5 tokens)
+    // SDK expects raw token amount (multiply by 10^6 for pump.fun's 6 decimals)
+    const rawAmount = BigInt(Math.floor(sellAmount * 1e6));
+
+    const sellTx = await sdk.getSellInstructionsByTokenAmount(
+      buyerKeypair.publicKey,
       new PublicKey(contractAddress),
-      sellAmountBigInt,
-      BigInt(500), // 5% slippage
+      rawAmount,
+      500n // 5% slippage
+    );
+
+    const sig = await buildAndSendTx(
+      connection,
+      sellTx.instructions,
+      buyerKeypair.publicKey,
+      [buyerKeypair],
       { unitLimit: 250000, unitPrice: 250000 }
     );
 
-    if (!result.success) {
-      throw new Error(`SDK sell failed: ${result.error || 'unknown'}`);
-    }
-
+    console.log(`✅ Sell tx: ${sig}`);
     return await getBalance(connection, buyer.pub);
   } catch (err) {
     console.error('sell error:', err.message);
