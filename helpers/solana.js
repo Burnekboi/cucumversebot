@@ -296,6 +296,13 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
     const buyAmountWithSlippage = calculateWithSlippageBuy(devBuyLamports, 500n);
     
     // Use enhanced buy instruction with all required accounts
+    console.log('🔍 Debug - buildBuyInstruction parameters:');
+    console.log('connection type:', typeof connection);
+    console.log('mainKeypair.publicKey:', mainKeypair.publicKey?.toString());
+    console.log('mintKeypair.publicKey:', mintKeypair.publicKey?.toString());
+    console.log('buyAmount:', buyAmount?.toString());
+    console.log('buyAmountWithSlippage:', buyAmountWithSlippage?.toString());
+    
     const buyTx = await buildBuyInstruction(
       connection,
       mainKeypair.publicKey,
@@ -824,11 +831,43 @@ async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount,
     const associatedBondingCurve = await getAssociatedTokenAddress(mint, bondingCurvePDA, true);
     const associatedUser = await getAssociatedTokenAddress(mint, userPublicKey, false);
     
+    // Debug: Log all accounts to identify invalid ones
+    console.log('🔍 Debug - Account validation:');
+    console.log('userPublicKey:', userPublicKey?.toString());
+    console.log('mint:', mint?.toString());
+    console.log('globalAccount.feeRecipient:', globalAccount.feeRecipient?.toString());
+    console.log('bondingCurvePDA:', bondingCurvePDA?.toString());
+    console.log('associatedBondingCurve:', associatedBondingCurve?.toString());
+    console.log('associatedUser:', associatedUser?.toString());
+    
     // Get the global PDA
     const [globalPDA] = PublicKey.findProgramAddressSync(
       [Buffer.from('global')], 
       new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P')
     );
+    console.log('globalPDA:', globalPDA?.toString());
+    
+    // Validate all accounts before proceeding
+    const accounts = {
+      globalPDA,
+      feeRecipient: globalAccount.feeRecipient,
+      mint,
+      bondingCurve: bondingCurvePDA,
+      associatedBondingCurve,
+      associatedUser,
+      user: userPublicKey
+    };
+    
+    for (const [name, account] of Object.entries(accounts)) {
+      if (!account || typeof account.toString !== 'function') {
+        throw new Error(`Invalid account: ${name} - ${account}`);
+      }
+      try {
+        new PublicKey(account.toString());
+      } catch (e) {
+        throw new Error(`Invalid public key for ${name}: ${account?.toString()} - ${e.message}`);
+      }
+    }
     
     // Build transaction with all required accounts
     const transaction = new Transaction();
