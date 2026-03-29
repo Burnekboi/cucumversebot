@@ -210,104 +210,91 @@ async function sendJitoBundle({ payer, instructions, connection, additionalSigne
     try {
       const { blockhash } = await connection.getLatestBlockhash("finalized");
 
-      // Jito Bundle expects multiple transactions, not one transaction with multiple instructions
-      // We need to split instructions into logical transaction groups
+      // 🧱 Separate instructions into logical groups
+      const createInstructions = [];
+      const buyInstructions = [];
+      const tipInstructions = [];
       
-      // Group 1: Create instructions (token creation)
-      const createInstructions = instructions.filter(ix => 
-        ix.programId?.toString() !== '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P' && // Not pump.fun buy
-        !ix.keys?.some(k => k.pubkey?.toString()?.includes('Cw8CFyMv')) // Not Jito tip
-      );
-      
-      // Group 2: Buy instruction (pump.fun)
-      const buyInstructions = instructions.filter(ix => 
-        ix.programId?.toString() === '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
-      );
-      
-      // Group 3: Jito tip instruction
-      const tipInstructions = instructions.filter(ix => 
-        ix.keys?.some(k => k.pubkey?.toString()?.includes('Cw8CFyMv'))
-      );
+      instructions.forEach(ix => {
+        if (ix.programId?.toString() === '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P') {
+          buyInstructions.push(ix);
+        } else if (ix.keys?.some(k => k.pubkey?.toString()?.includes('Cw8CFyMv'))) {
+          tipInstructions.push(ix);
+        } else {
+          createInstructions.push(ix);
+        }
+      });
 
       const transactions = [];
-      
-      // Transaction 1: Create token + priority fees
+
+      // ⚡ TX1: CREATE TOKEN (with compute budget + create instructions)
       if (createInstructions.length > 0) {
-        const createMessage = new TransactionMessage({
+        const msg1 = new TransactionMessage({
           payerKey: payer.publicKey,
           recentBlockhash: blockhash,
           instructions: createInstructions,
         }).compileToV0Message();
 
-        const createTx = new VersionedTransaction(createMessage);
-        // For create transaction, we need both payer and mintKeypair
-        createTx.sign([payer, ...additionalSigners]); 
-        transactions.push(createTx);
+        const tx1 = new VersionedTransaction(msg1);
+        // Sign with payer AND mintKeypair for token creation
+        tx1.sign([payer, ...additionalSigners]);
+        transactions.push(tx1);
       }
-      
-      // Transaction 2: Buy instruction
+
+      // ⚡ TX2: BUY TOKEN (with compute budget + buy instructions)
       if (buyInstructions.length > 0) {
-        const buyMessage = new TransactionMessage({
+        const msg2 = new TransactionMessage({
           payerKey: payer.publicKey,
-          recentBlockhash: blockhash,
+          recentBlockhash: blockhash, // SAME BLOCKHASH
           instructions: buyInstructions,
         }).compileToV0Message();
 
-        const buyTx = new VersionedTransaction(buyMessage);
-        // Mint keypair is NOT a signer for the buy instruction - only buyer signs
-        buyTx.sign([payer]); 
-        transactions.push(buyTx);
+        const tx2 = new VersionedTransaction(msg2);
+        // ONLY payer signs buy transaction
+        tx2.sign([payer]);
+        transactions.push(tx2);
       }
-      
-      // Transaction 3: Jito tip (payer only - mintKeypair not needed for tip)
+
+      // ⚡ TX3: JITO TIP
       if (tipInstructions.length > 0) {
-        const tipMessage = new TransactionMessage({
+        const msgTip = new TransactionMessage({
           payerKey: payer.publicKey,
-          recentBlockhash: blockhash,
+          recentBlockhash: blockhash, // SAME BLOCKHASH
           instructions: tipInstructions,
         }).compileToV0Message();
 
-        const tipTx = new VersionedTransaction(tipMessage);
+        const txTip = new VersionedTransaction(msgTip);
         // ONLY payer signs tip transaction
-        tipTx.sign([payer]); 
-        transactions.push(tipTx);
+        txTip.sign([payer]);
+        transactions.push(txTip);
       }
 
-      // Serialize all transactions for Jito bundle
-      const serializedTransactions = transactions.map(tx => 
+      // 📦 BUNDLE ORDER: CREATE → BUY → TIP
+      const bundle = transactions.map((tx) =>
         Buffer.from(tx.serialize()).toString("base64")
       );
 
-      // Use proper Jito bundle format
-      const body = {
-        "jsonrpc": "2.0",
-        "id": 1,
-        "method": "sendBundle",
-        "params": [
-          serializedTransactions,
-          {
-            "encoding": "base64"
-          }
-        ]
-      };
-
+      // 🚀 SEND TO JITO
       const response = await fetch('https://mainnet.block-engine.jito.wtf/api/v1/bundles', {
         method: 'POST',
-        body: JSON.stringify(body),
         headers: {
-          'Content-Type': 'application/json'
-        }
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          jsonrpc: "2.0",
+          id: 1,
+          method: "sendBundle",
+          params: [bundle]
+        }),
       });
 
-      const json = await response.json();
+      const data = await response.json();
       
-      if (json.error) throw new Error(json.error.message);
-      if (!json.result) throw new Error('No result returned from Jito bundle');
+      if (data.error) throw new Error(data.error.message);
+      if (!data.result) throw new Error('No result returned from Jito bundle');
 
-      console.log('✅ Bundle sent successfully:', json.result);
-      
-      // Return the bundle ID instead of trying to encode a single signature
-      return { success: true, signature: json.result };
+      console.log('✅ Bundle sent successfully:', data.result);
+      return { success: true, signature: data.result };
       
     } catch (err) {
       console.error(`❌ Bundle attempt ${attempt} failed:`, err.message);
