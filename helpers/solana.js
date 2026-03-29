@@ -191,15 +191,44 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
     // Initialize mint instruction
     console.log('🔧 Building initializeMint instruction...');
     try {
-      const initializeMintIx = await sdk.program.methods
-        .initializeMint(0, null, null, mainKeypair.publicKey)
-        .accounts({
-          mint: mintKeypair.publicKey,
-          systemProgram: SystemProgram.programId,
-          rent: new PublicKey("SysvarRent111111111111111111111111111"),
-          tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
-        })
-        .instruction();
+      // Use manual instruction construction instead of SDK method that doesn't exist
+      const initializeMintIx = new TransactionInstruction({
+        keys: [
+          {
+            pubkey: mintKeypair.publicKey,
+            isSigner: false,
+            isWritable: true,
+          },
+          {
+            pubkey: mainKeypair.publicKey,
+            isSigner: true,
+            isWritable: true,
+          },
+          {
+            pubkey: SystemProgram.programId,
+            isSigner: false,
+            isWritable: false,
+          },
+          {
+            pubkey: new PublicKey("SysvarRent111111111111111111111111111"),
+            isSigner: false,
+            isWritable: false,
+          },
+          {
+            pubkey: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+            isSigner: false,
+            isWritable: false,
+          },
+        ],
+        programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+        data: Buffer.concat([
+          Buffer.from([37]), // Instruction index for InitializeMint
+          mainKeypair.publicKey.toBuffer(),
+          Buffer.from([0]), // Decimals
+          Buffer.from([0]), // Mint authority (none)
+          Buffer.from([0]), // Freeze authority (none)
+        ]),
+      });
       createInstructions.push(initializeMintIx);
       console.log('✅ InitializeMint instruction created');
     } catch (err) {
