@@ -234,9 +234,16 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     let createTx;
     
     if (devBuyLamports > 0n) {
-      // MANDATORY: Dev buy must be bundled with token creation using Jito
-      console.log(`🚀 Creating token with MANDATORY atomic dev buy (${initialBuy} SOL)`);
-      
+      // Dev buy is bundled with token creation in one TX — dev wallet is guaranteed first buyer.
+      console.log(`🚀 Creating token with atomic dev buy (${initialBuy} SOL) — dev is first buyer`);
+
+      // Pre-calculate estimated token amount using pump.fun's actual initial reserves
+      // virtualSolReserves = 30 SOL, virtualTokenReserves = 1,073,000,191 tokens (6 decimals)
+      const VIRT_SOL   = BigInt(30_000_000_000);
+      const VIRT_TOKS  = BigInt(1_073_000_191) * BigInt(1_000_000);
+      const estRawToks = (VIRT_TOKS * devBuyLamports) / (VIRT_SOL + devBuyLamports);
+      const estDevTokens = (Number(estRawToks) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 0 });
+
       // Get create instructions
       const createInstructions = await sdk.getCreateInstructions(
         mainKeypair.publicKey,
@@ -246,12 +253,12 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
         mintKeypair
       );
 
-      // Get dev buy instructions (MUST be included)
+      // Get dev buy instructions (bundled in same TX — dev is first buyer)
       const globalAccount = await sdk.getGlobalAccount('confirmed');
       const buyAmount = globalAccount.getInitialBuyPrice(devBuyLamports);
       const { calculateWithSlippageBuy } = require('pumpdotfun-sdk/dist/cjs/util');
       const buyAmountWithSlippage = calculateWithSlippageBuy(devBuyLamports, 500n);
-      
+
       const buyInstructions = await sdk.getBuyInstructions(
         mainKeypair.publicKey,
         mintKeypair.publicKey,
@@ -260,11 +267,14 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
         buyAmountWithSlippage
       );
 
-      // Combine both instructions for MANDATORY atomic execution
+      // Combine create + buy into one TX — guarantees dev is first buyer on-chain
       const combinedInstructions = [createInstructions, buyInstructions];
       createTx = combinedInstructions;
-      
-      session.liveLogs.push({ status: 'processing', message: `🏗 Creating ${symbol} with MANDATORY atomic dev buy (${initialBuy} SOL)...` });
+
+      session.liveLogs.push({
+        status: 'processing',
+        message: `🏗 Creating ${symbol} — Dev buy (${initialBuy} SOL ≈ ${estDevTokens} tokens) bundled in same TX...`
+      });
     } else {
       // Create token only (no dev buy - no Jito needed)
       createTx = await sdk.getCreateInstructions(
@@ -291,14 +301,16 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     console.log(`✅ Token deployed! Signature: ${deploymentSig}`);
     session.liveLogs.push({ status: 'success', message: `🚀 Token Deployed! TX: ${deploymentSig.slice(0, 16)}...` });
 
-    // If dev buy was included atomically, show success
+    // If dev buy was included atomically, confirm first-buyer status
     if (devBuyLamports > 0n) {
-      // Calculate dev's token holdings
-      const globalAccount = await sdk.getGlobalAccount('confirmed');
-      const devTokens = Number(globalAccount.getInitialBuyPrice(devBuyLamports)) / 1e6;
-      
-      session.liveLogs.push({ status: 'success', message: `💰 Atomic Dev Buy Completed! (${initialBuy} SOL)` });
-      session.liveLogs.push({ status: 'success', message: `👤 Dev secured ${devTokens.toFixed(2)} tokens` });
+      // Re-use the same upfront formula for the success message
+      const VIRT_SOL   = BigInt(30_000_000_000);
+      const VIRT_TOKS  = BigInt(1_073_000_191) * BigInt(1_000_000);
+      const estRawToks = (VIRT_TOKS * devBuyLamports) / (VIRT_SOL + devBuyLamports);
+      const estDevTokens = (Number(estRawToks) / 1e6).toLocaleString('en-US', { maximumFractionDigits: 0 });
+
+      session.liveLogs.push({ status: 'success', message: `💰 Dev Buy Complete! ${initialBuy} SOL → ~${estDevTokens} tokens` });
+      session.liveLogs.push({ status: 'success', message: `👑 Dev wallet is FIRST BUYER ✅ (bundled with create TX)` });
     }
 
     session.liveLogs.push({ status: 'completed', message: `✅ ${symbol} token successfully created` });
