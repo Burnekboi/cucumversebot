@@ -831,6 +831,18 @@ async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount,
     const associatedBondingCurve = await getAssociatedTokenAddress(mint, bondingCurvePDA, true);
     const associatedUser = await getAssociatedTokenAddress(mint, userPublicKey, false);
     
+    // Get global PDA
+    const [globalPDA] = PublicKey.findProgramAddressSync(
+      [Buffer.from('global')], 
+      new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P')
+    );
+    
+    // Get global volume accumulator PDA
+    const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync(
+      [Buffer.from('global_volume_accumulator')], 
+      new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P')
+    );
+    
     // Debug: Log all accounts to identify invalid ones
     console.log('🔍 Debug - Account validation:');
     console.log('userPublicKey:', userPublicKey?.toString());
@@ -839,13 +851,8 @@ async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount,
     console.log('bondingCurvePDA:', bondingCurvePDA?.toString());
     console.log('associatedBondingCurve:', associatedBondingCurve?.toString());
     console.log('associatedUser:', associatedUser?.toString());
-    
-    // Get the global PDA
-    const [globalPDA] = PublicKey.findProgramAddressSync(
-      [Buffer.from('global')], 
-      new PublicKey('6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P')
-    );
     console.log('globalPDA:', globalPDA?.toString());
+    console.log('globalVolumeAccumulator:', globalVolumeAccumulator?.toString());
     
     // Validate all accounts before proceeding
     const accounts = {
@@ -855,7 +862,8 @@ async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount,
       bondingCurve: bondingCurvePDA,
       associatedBondingCurve,
       associatedUser,
-      user: userPublicKey
+      user: userPublicKey,
+      globalVolumeAccumulator // ✅ CRITICAL: Missing account
     };
     
     for (const [name, account] of Object.entries(accounts)) {
@@ -917,6 +925,7 @@ async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount,
           associatedBondingCurve: associatedBondingCurve,
           associatedUser: associatedUser,
           user: userPublicKey,
+          globalVolumeAccumulator: globalVolumeAccumulator, // ✅ CRITICAL: Missing account
           systemProgram: systemProgram,
           tokenProgram: tokenProgram,
           rent: rent,
