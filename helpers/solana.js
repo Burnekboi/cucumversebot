@@ -724,13 +724,40 @@ async function sellTokenAmount(bot, connection, buyer, sellAmount, contractAddre
 
     const PUMP_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
     if (sellTx && sellTx.instructions) {
+      let creatorPubkey = new PublicKey("11111111111111111111111111111111");
+      try {
+        const bcData = await getBondingCurveData(connection, new PublicKey(contractAddress));
+        if (bcData && bcData.creator) creatorPubkey = bcData.creator;
+      } catch (e) {
+        console.error("Could not fetch creator for vault PDA");
+      }
+      const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creatorPubkey.toBuffer()], PUMP_PROGRAM);
+      const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config")], PUMP_PROGRAM);
+      const feeProgram = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
+
       sellTx.instructions.forEach(ix => {
         if (ix.programId.equals(PUMP_PROGRAM)) {
-          const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from('global_volume_accumulator')], PUMP_PROGRAM);
-          const [bondingCurveV2] = PublicKey.findProgramAddressSync([Buffer.from('bonding-curve-v2'), typeof mint === 'string' ? new PublicKey(mint).toBuffer() : mint.toBuffer()], PUMP_PROGRAM);
+          const oldKeys = [...ix.keys];
+          ix.keys = [];
+          for (let i = 0; i <= 7; i++) {
+            if (oldKeys[i]) ix.keys.push(oldKeys[i]);
+          }
           
-          ix.keys.push({ pubkey: globalVolumeAccumulator, isSigner: false, isWritable: true });
-          ix.keys.push({ pubkey: bondingCurveV2, isSigner: false, isWritable: true });
+          // 8: creator_vault
+          ix.keys.push({ pubkey: creatorVault, isSigner: false, isWritable: true });
+          
+          // 9: token_program (was at 9 in old sdk, but old sdk had associated_token at 8)
+          if (oldKeys[9]) ix.keys.push(oldKeys[9]);
+          else ix.keys.push({ pubkey: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"), isSigner: false, isWritable: false });
+          
+          if (oldKeys[10]) ix.keys.push(oldKeys[10]);
+          else ix.keys.push({ pubkey: new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"), isSigner: false, isWritable: false });
+          
+          if (oldKeys[11]) ix.keys.push(oldKeys[11]);
+          else ix.keys.push({ pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false });
+          
+          ix.keys.push({ pubkey: feeConfig, isSigner: false, isWritable: false });
+          ix.keys.push({ pubkey: feeProgram, isSigner: false, isWritable: false });
         }
       });
     }
@@ -790,16 +817,51 @@ async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount,
       maxSolCost
     );
     
-    // THE FIX: Add global_volume_accumulator manually because legacy sdk doesn't
+        // THE FIX: Pump.fun massively upgraded to 16 accounts (March 2026) 
+    // The old SDK only loads 12 accounts. We must hot-patch the anchor keys array completely!
     const PUMP_PROGRAM = new PublicKey("6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P");
     if (buyTx && buyTx.instructions) {
+      // Fetch creator for creator_vault PDA
+      let creatorPubkey = new PublicKey("11111111111111111111111111111111");
+      try {
+        const bcData = await getBondingCurveData(connection, typeof mint === 'string' ? new PublicKey(mint) : mint);
+        if (bcData && bcData.creator) creatorPubkey = bcData.creator;
+      } catch (e) {
+        console.error("Could not fetch creator for vault PDA");
+      }
+
+      const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creatorPubkey.toBuffer()], PUMP_PROGRAM);
+      const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM);
+      const pubkeyBuffer = typeof userPublicKey === 'string' ? new PublicKey(userPublicKey).toBuffer() : userPublicKey.toBuffer();
+      const [userVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), pubkeyBuffer], PUMP_PROGRAM);
+      const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config")], PUMP_PROGRAM);
+      const feeProgram = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
+
       buyTx.instructions.forEach(ix => {
         if (ix.programId.equals(PUMP_PROGRAM)) {
-          const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from('global_volume_accumulator')], PUMP_PROGRAM);
-          const [bondingCurveV2] = PublicKey.findProgramAddressSync([Buffer.from('bonding-curve-v2'), typeof mint === 'string' ? new PublicKey(mint).toBuffer() : mint.toBuffer()], PUMP_PROGRAM);
+          // The old keys are: 0..8 standard. 9 is rent. 10 is eventAuthority. 11 is program.
+          const oldKeys = [...ix.keys];
           
+          ix.keys = [];
+          for (let i = 0; i <= 8; i++) {
+             if (oldKeys[i]) ix.keys.push(oldKeys[i]);
+          }
+          
+          // 9: creator_vault (Replaces RENT)
+          ix.keys.push({ pubkey: creatorVault, isSigner: false, isWritable: true });
+          
+          // 10 & 11: eventAuthority & program
+          if (oldKeys[10]) ix.keys.push(oldKeys[10]);
+          else ix.keys.push({ pubkey: new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"), isSigner: false, isWritable: false });
+          
+          if (oldKeys[11]) ix.keys.push(oldKeys[11]);
+          else ix.keys.push({ pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false });
+          
+          // Append the 4 new mandatory accounts!
           ix.keys.push({ pubkey: globalVolumeAccumulator, isSigner: false, isWritable: true });
-          ix.keys.push({ pubkey: bondingCurveV2, isSigner: false, isWritable: true });
+          ix.keys.push({ pubkey: userVolumeAccumulator, isSigner: false, isWritable: true });
+          ix.keys.push({ pubkey: feeConfig, isSigner: false, isWritable: false });
+          ix.keys.push({ pubkey: feeProgram, isSigner: false, isWritable: false });
         }
       });
     }
