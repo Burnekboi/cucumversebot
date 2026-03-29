@@ -118,181 +118,28 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
     console.log(`✅ SOL balance check passed: ${(balance / LAMPORTS_PER_SOL).toFixed(4)} SOL available`);
 
     // 1. Get standard Create instructions
-    console.log('🔧 Building MANUAL create instructions...');
+    console.log('🔧 Building Create instructions from SDK...');
     
-    // Ensure mintKeypair is valid before proceeding
     if (!mintKeypair || !mintKeypair.publicKey) {
       throw new Error('mintKeypair is not properly initialized');
     }
     
     console.log('🔑 Mint Keypair:', mintKeypair.publicKey.toString());
     
-    // Manual token creation instructions based on Pump.fun contract structure
-    const createInstructions = [];
+    const createTx = await sdk.getCreateInstructions(
+      mainKeypair.publicKey,
+      tokenName,
+      symbol,
+      "https://ipfs.io/ipfs/" + metadataUri.split("/").pop(),
+      mintKeypair
+    );
+    const createInstructions = createTx.instructions;
     
     // Compute budget instructions
-    createInstructions.push(ComputeBudgetProgram.setComputeUnitLimit({ units: 800000 }));
-    createInstructions.push(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1500000 }));
+    createInstructions.unshift(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 1500000 }));
+    createInstructions.unshift(ComputeBudgetProgram.setComputeUnitLimit({ units: 800000 }));
     
-    // Create mint account instruction
-    console.log('🔧 Creating mint account instruction...');
-    console.log('🔍 Debug - mintKeypair before createAccount:', {
-      exists: !!mintKeypair,
-      hasPublicKey: !!mintKeypair?.publicKey,
-      publicKeyString: mintKeypair?.publicKey?.toString() || 'undefined',
-      hasToBuffer: !!mintKeypair?.publicKey?.toBuffer
-    });
-    
-    if (!mintKeypair || !mintKeypair.publicKey) {
-      throw new Error('mintKeypair is not properly initialized');
-    }
-    
-    try {
-      // Use raw instruction format instead of SystemProgram.createAccount to avoid toBuffer issues
-      const createMintAccountIx = new TransactionInstruction({
-        keys: [
-          {
-            pubkey: mainKeypair.publicKey,
-            isSigner: true,
-            isWritable: true,
-          },
-          {
-            pubkey: mintKeypair.publicKey,
-            isSigner: true,
-            isWritable: true,
-          },
-          {
-            pubkey: SystemProgram.programId,
-            isSigner: false,
-            isWritable: false,
-          },
-        ],
-        programId: SystemProgram.programId,
-        data: Buffer.concat([
-          Buffer.from([0]), // Instruction index for CreateAccount
-          mainKeypair.publicKey.toBuffer(),
-          mintKeypair.publicKey.toBuffer(),
-          Buffer.from([82, 0, 0]), // Space: 82 bytes
-          Buffer.from([10000000, 0, 0, 0]), // Lamports: 0.01 SOL
-        ]),
-      });
-      createInstructions.push(createMintAccountIx);
-      console.log('✅ Mint account instruction created');
-    } catch (err) {
-      console.error('❌ Error creating mint account instruction:', err);
-      console.error('❌ MintKeypair details at error time:', {
-        exists: !!mintKeypair,
-        hasPublicKey: !!mintKeypair?.publicKey,
-        publicKeyString: mintKeypair?.publicKey?.toString() || 'undefined'
-      });
-      throw new Error(`Failed to create mint account: ${err.message}`);
-    }
-    
-    // Initialize mint instruction
-    console.log('🔧 Building initializeMint instruction...');
-    try {
-      // Use manual instruction construction instead of SDK method that doesn't exist
-      const initializeMintIx = new TransactionInstruction({
-        keys: [
-          {
-            pubkey: mintKeypair.publicKey,
-            isSigner: false,
-            isWritable: true,
-          },
-          {
-            pubkey: mainKeypair.publicKey,
-            isSigner: true,
-            isWritable: true,
-          },
-          {
-            pubkey: new PublicKey("11111111111111111111111111111111"), // System Program
-            isSigner: false,
-            isWritable: false,
-          },
-          {
-            pubkey: new PublicKey("SysvarRent111111111111111111111111111111111"),
-            isSigner: false,
-            isWritable: false,
-          },
-          {
-            pubkey: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
-            isSigner: false,
-            isWritable: false,
-          },
-        ],
-        programId: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
-        data: Buffer.concat([
-          Buffer.from([37]), // Instruction index for InitializeMint
-          mainKeypair.publicKey.toBuffer(),
-          Buffer.from([0]), // Decimals
-          Buffer.from([0]), // Mint authority (none)
-          Buffer.from([0]), // Freeze authority (none)
-        ]),
-      });
-      createInstructions.push(initializeMintIx);
-      console.log('✅ InitializeMint instruction created');
-    } catch (err) {
-      console.error('❌ Error creating initializeMint instruction:', err);
-      throw new Error(`Failed to create initializeMint instruction: ${err.message}`);
-    }
-    
-    // Create metadata account instruction
-    const MPL_TOKEN_METADATA_PROGRAM_ID = new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s");
-    const [metadataAccount] = PublicKey.findProgramAddressSync([
-      Buffer.from("metadata"),
-      MPL_TOKEN_METADATA_PROGRAM_ID.toBuffer(),
-      mintKeypair.publicKey.toBuffer()
-    ], MPL_TOKEN_METADATA_PROGRAM_ID);
-    
-    const createMetadataAccountIx = new TransactionInstruction({
-      keys: [
-        {
-          pubkey: mainKeypair.publicKey,
-          isSigner: true,
-          isWritable: true,
-        },
-        {
-          pubkey: metadataAccount,
-          isSigner: false,
-          isWritable: true,
-        },
-        {
-          pubkey: new PublicKey("11111111111111111111111111111111"), // System Program
-          isSigner: false,
-          isWritable: false,
-        },
-      ],
-      programId: new PublicKey("11111111111111111111111111111111"), // System Program
-      data: Buffer.concat([
-        Buffer.from([0]), // Instruction index for CreateAccount
-        mainKeypair.publicKey.toBuffer(),
-        metadataAccount.toBuffer(),
-        Buffer.from([232, 3]), // Space: 1000 bytes
-        Buffer.from([10000000, 0, 0, 0]), // Lamports: 0.01 SOL
-      ]),
-    });
-    createInstructions.push(createMetadataAccountIx);
-    
-    // Initialize metadata instruction
-    const createMetadataIx = await sdk.program.methods
-      .createMetadata(
-        tokenName,
-        symbol,
-        "https://ipfs.io/ipfs/" + metadataUri.split("/").pop(),
-        null
-      )
-      .accounts({
-        metadata: metadataAccount,
-        mint: mintKeypair.publicKey,
-        mintAuthority: mainKeypair.publicKey,
-        payer: mainKeypair.publicKey,
-        systemProgram: SystemProgram.programId,
-        rent: new PublicKey("SysvarRent111111111111111111111111111111"),
-      })
-      .instruction();
-    createInstructions.push(createMetadataIx);
-    
-    console.log(`✅ Created ${createInstructions.length} manual create instructions`);
+    console.log(`✅ Extracted ${createInstructions.length} create instructions from SDK`);
 
     // 2. Prepare Buy Instruction (Manual Construction)
     const globalAccount = await sdk.getGlobalAccount('confirmed');
@@ -306,11 +153,13 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
     );
     const userATA = getAssociatedTokenAddressSync(mintKeypair.publicKey, mainKeypair.publicKey);
     
-    // THE FIX: Define 13th account
+    // THE FIX: Define 13th and 14th accounts
     const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from('global_volume_accumulator')], PUMP_PROGRAM);
+    const [bondingCurveV2] = PublicKey.findProgramAddressSync([Buffer.from('bonding-curve-v2'), mintKeypair.publicKey.toBuffer()], PUMP_PROGRAM);
 
     console.log(`🔧 Bonding Curve: ${bondingCurve.toString()}`);
     console.log(`🔧 Global Volume Accumulator: ${globalVolumeAccumulator.toString()}`);
+    console.log(`🔧 Bonding Curve V2: ${bondingCurveV2.toString()}`);
 
     const buyIx = await sdk.program.methods
       .buy(new anchor.BN(buyAmount.toString()), new anchor.BN(buyAmountWithSlippage.toString()))
@@ -329,7 +178,8 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
         program: PUMP_PROGRAM,
       })
       .remainingAccounts([
-        { pubkey: globalVolumeAccumulator, isSigner: false, isWritable: true }
+        { pubkey: globalVolumeAccumulator, isSigner: false, isWritable: true },
+        { pubkey: bondingCurveV2, isSigner: false, isWritable: true }
       ])
       .instruction();
 
