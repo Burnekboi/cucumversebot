@@ -232,9 +232,10 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
 
     // Create token and atomic dev buy if needed
     let createTx;
+    
     if (devBuyLamports > 0n) {
-      // Dev atomic buy: Always use Jito bundle when initial buy > 0
-      console.log(`🚀 Creating token with atomic dev buy (${initialBuy} SOL)`);
+      // MANDATORY: Dev buy must be bundled with token creation using Jito
+      console.log(`🚀 Creating token with MANDATORY atomic dev buy (${initialBuy} SOL)`);
       
       // Get create instructions
       const createInstructions = await sdk.getCreateInstructions(
@@ -245,7 +246,7 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
         mintKeypair
       );
 
-      // Get dev buy instructions
+      // Get dev buy instructions (MUST be included)
       const globalAccount = await sdk.getGlobalAccount('confirmed');
       const buyAmount = globalAccount.getInitialBuyPrice(devBuyLamports);
       const { calculateWithSlippageBuy } = require('pumpdotfun-sdk/dist/cjs/util');
@@ -259,13 +260,13 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
         buyAmountWithSlippage
       );
 
-      // Combine both instructions for atomic execution
+      // Combine both instructions for MANDATORY atomic execution
       const combinedInstructions = [createInstructions, buyInstructions];
       createTx = combinedInstructions;
       
-      session.liveLogs.push({ status: 'processing', message: `🏗 Creating ${symbol} with atomic dev buy (${initialBuy} SOL)...` });
+      session.liveLogs.push({ status: 'processing', message: `🏗 Creating ${symbol} with MANDATORY atomic dev buy (${initialBuy} SOL)...` });
     } else {
-      // Create token only (no dev buy)
+      // Create token only (no dev buy - no Jito needed)
       createTx = await sdk.getCreateInstructions(
         mainKeypair.publicKey,
         tokenName,
@@ -277,7 +278,7 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
       session.liveLogs.push({ status: 'processing', message: `🏗 Creating ${symbol} token...` });
     }
 
-    console.log(`🚀 Sending deployment tx | mint: ${mintAddress} | atomic dev buy: ${devBuyLamports > 0n ? 'YES' : 'NO'}`);
+    console.log(`🚀 Sending deployment tx | mint: ${mintAddress} | atomic dev buy: ${devBuyLamports > 0n ? 'MANDATORY' : 'NO'}`);
 
     const deploymentSig = await buildAndSendTx(
       connection,
@@ -290,9 +291,9 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     console.log(`✅ Token deployed! Signature: ${deploymentSig}`);
     session.liveLogs.push({ status: 'success', message: `🚀 Token Deployed! TX: ${deploymentSig.slice(0, 16)}...` });
 
-    // Check if dev buy was included atomically
+    // If dev buy was included atomically, show success
     if (devBuyLamports > 0n) {
-      // Calculate dev's token holdings (approximate based on bonding curve)
+      // Calculate dev's token holdings
       const globalAccount = await sdk.getGlobalAccount('confirmed');
       const devTokens = Number(globalAccount.getInitialBuyPrice(devBuyLamports)) / 1e6;
       
@@ -305,7 +306,7 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     await editTerminal(
       `✅ *Deployment Complete!*\n\n` +
       `📍 Mint: \`${mintAddress}\`\n` +
-      `💰 Dev Buy: ${devBuyLamports > 0n ? `${initialBuy} SOL (Atomic) ✅` : 'No SOL ❌'}\n` +
+      `💰 Dev Buy: ${devBuyLamports > 0n ? `${initialBuy} SOL (Mandatory Atomic) ✅` : 'No SOL ❌'}\n` +
       `🔗 [Pump.fun](https://pump.fun/${mintAddress})`
     );
 
@@ -474,7 +475,7 @@ async function sellTokenAmount(bot, connection, buyer, sellAmount, contractAddre
  * 🛒 BUY INSTRUCTION BUILDER
  * ===============================
  */
-async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount, maxSolCost, creator) {
+async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount, maxSolCost) {
   const { PumpFunSDK } = require('pumpdotfun-sdk');
   const { AnchorProvider } = require('@coral-xyz/anchor');
   
