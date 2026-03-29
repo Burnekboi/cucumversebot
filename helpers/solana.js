@@ -188,7 +188,7 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
       payer: mainKeypair,
       instructions: allInstructions,
       connection: connection,
-      additionalSigners: [mintKeypair]
+      additionalSigners: [mintKeypair] // Pass mintKeypair for create transaction
     });
 
     if (!result.success) throw new Error(result.error);
@@ -240,7 +240,8 @@ async function sendJitoBundle({ payer, instructions, connection, additionalSigne
         }).compileToV0Message();
 
         const createTx = new VersionedTransaction(createMessage);
-        createTx.sign([payer, ...additionalSigners]); // Both payer and mintKeypair needed for creation
+        // For create transaction, we need both payer and mintKeypair
+        createTx.sign([payer, ...additionalSigners]); 
         transactions.push(createTx);
       }
       
@@ -267,7 +268,8 @@ async function sendJitoBundle({ payer, instructions, connection, additionalSigne
         }).compileToV0Message();
 
         const tipTx = new VersionedTransaction(tipMessage);
-        tipTx.sign([payer]); // ONLY payer signs tip transaction
+        // ONLY payer signs tip transaction
+        tipTx.sign([payer]); 
         transactions.push(tipTx);
       }
 
