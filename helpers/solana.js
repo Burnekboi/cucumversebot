@@ -242,11 +242,32 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
       mintKeypair.publicKey.toBuffer()
     ], new PublicKey("metaqbxxUerdq28cj1RbAWkYQm3x6dC"));
     
-    const createMetadataAccountIx = SystemProgram.createAccount({
-      fromPubkey: mainKeypair.publicKey,
-      newAccountPubkey: metadataAccount,
-      lamports: 10000000, // 0.01 SOL for rent exemption
-      space: 1000, // Metadata account size
+    const createMetadataAccountIx = new TransactionInstruction({
+      keys: [
+        {
+          pubkey: mainKeypair.publicKey,
+          isSigner: true,
+          isWritable: true,
+        },
+        {
+          pubkey: metadataAccount,
+          isSigner: false,
+          isWritable: true,
+        },
+        {
+          pubkey: new PublicKey("11111111111111111111111111111111"), // System Program
+          isSigner: false,
+          isWritable: false,
+        },
+      ],
+      programId: new PublicKey("11111111111111111111111111111111"), // System Program
+      data: Buffer.concat([
+        Buffer.from([0]), // Instruction index for CreateAccount
+        mainKeypair.publicKey.toBuffer(),
+        metadataAccount.toBuffer(),
+        Buffer.from([232, 3]), // Space: 1000 bytes
+        Buffer.from([10000000, 0, 0, 0]), // Lamports: 0.01 SOL
+      ]),
     });
     createInstructions.push(createMetadataAccountIx);
     
