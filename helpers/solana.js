@@ -179,7 +179,9 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
       })
       .remainingAccounts([
         { pubkey: globalVolumeAccumulator, isSigner: false, isWritable: true },
-        { pubkey: bondingCurveV2, isSigner: false, isWritable: true }
+        { pubkey: bondingCurveV2, isSigner: false, isWritable: true },
+        { pubkey: feeConfig, isSigner: false, isWritable: false },
+        { pubkey: feeProgram, isSigner: false, isWritable: false },
       ])
       .instruction();
 
