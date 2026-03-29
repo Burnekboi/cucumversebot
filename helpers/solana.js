@@ -805,6 +805,31 @@ async function sendTx(connection, transaction, signers) {
   );
 }
 
+function handleTransactionError(err) {
+  // Extract error message and provide user-friendly feedback
+  if (err.message) {
+    // Common Solana error patterns
+    if (err.message.includes('insufficient funds')) {
+      return 'Insufficient SOL balance for this transaction';
+    }
+    if (err.message.includes('blockhash expired')) {
+      return 'Transaction timed out. Please try again';
+    }
+    if (err.message.includes('custom program error')) {
+      return 'Transaction failed due to program error';
+    }
+    if (err.message.includes('network')) {
+      return 'Network error. Please check your connection and try again';
+    }
+    
+    // Return original error if no specific pattern matches
+    return err.message;
+  }
+  
+  // Fallback for unknown error types
+  return 'An unknown error occurred during the transaction';
+}
+
 module.exports = {
   handleDeployRequest,
   getBalance,
