@@ -101,6 +101,22 @@ async function buildAndSendTx(connection, instructions, payer, signers, priority
 async function sendJitoBundle({ payer, instructionsTx1, instructionsTx2, connection, maxRetries = 3 }) {
   let lastError;
   
+  // Validate inputs before proceeding
+  console.log('🔍 Debug - Jito bundle validation:');
+  console.log('payer:', payer?.publicKey?.toString());
+  console.log('instructionsTx1 type:', typeof instructionsTx1);
+  console.log('instructionsTx2 type:', typeof instructionsTx2);
+  console.log('instructionsTx1 length:', Array.isArray(instructionsTx1) ? instructionsTx1.length : 'not array');
+  console.log('instructionsTx2 length:', Array.isArray(instructionsTx2) ? instructionsTx2.length : 'not array');
+  
+  if (!payer || !payer.publicKey) {
+    throw new Error('Invalid payer: payer or payer.publicKey is undefined');
+  }
+  
+  if (!Array.isArray(instructionsTx1) || !Array.isArray(instructionsTx2)) {
+    throw new Error('Invalid instructions: both instructionsTx1 and instructionsTx2 must be arrays');
+  }
+  
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
       // ✅ 1. Get fresh blockhash
@@ -147,6 +163,8 @@ async function sendJitoBundle({ payer, instructionsTx1, instructionsTx2, connect
       const serializedTxs = [tx1, tx2].map((tx) =>
         Buffer.from(tx.serialize()).toString("base64")
       );
+
+      console.log(`🔍 Debug - Attempt ${attempt}: Sending bundle with ${serializedTxs.length} transactions`);
 
       // ✅ 6. Send bundle
       const response = await axios.post('https://mainnet.block-engine.jito.wtf/api/v1/bundles', {
@@ -195,6 +213,7 @@ async function sendJitoBundle({ payer, instructionsTx1, instructionsTx2, connect
       }
       
       console.error(`Jito bundle attempt ${attempt} failed:`, err.message);
+      console.error('Full error:', err);
       
       if (attempt === maxRetries) {
         return {
@@ -844,6 +863,24 @@ async function buildBuyInstruction(connection, userPublicKey, mint, tokenAmount,
     );
     
     console.log('✅ SDK buy instruction created successfully');
+    console.log('🔍 Debug - buyTx structure:');
+    console.log('buyTx type:', typeof buyTx);
+    console.log('buyTx.instructions:', buyTx.instructions ? 'present' : 'missing');
+    console.log('buyTx.signers:', buyTx.signers ? 'present' : 'missing');
+    
+    if (buyTx.instructions) {
+      console.log('Number of instructions:', buyTx.instructions.length);
+      buyTx.instructions.forEach((ix, i) => {
+        console.log(`Instruction ${i}:`, ix?.programId?.toString());
+        console.log(`  Keys: ${ix?.keys?.length || 0}`);
+        if (ix.keys) {
+          ix.keys.forEach((key, j) => {
+            console.log(`    Key ${j}: ${key.pubkey?.toString()} (writable: ${key.isWritable}, signer: ${key.isSigner})`);
+          });
+        }
+      });
+    }
+    
     return buyTx;
     
   } catch (err) {
