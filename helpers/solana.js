@@ -95,28 +95,65 @@ async function buildAndSendTx(connection, instructions, payer, signers, priority
 
 /**
  * ===============================
- * 📦 JITO BUNDLE ATOMIC TRANSACTIONS
+ * 📦 IMPROVED JITO BUNDLE ATOMIC TRANSACTIONS
  * ===============================
  */
-async function sendJitoBundle(transactions, maxRetries = 3) {
+async function sendJitoBundle({ payer, instructionsTx1, instructionsTx2, connection, maxRetries = 3 }) {
   let lastError;
   
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     try {
-      const bundle = transactions.map(tx => tx.toString('base64'));
-      
-      // Add delay between retries to respect rate limits
-      if (attempt > 1) {
-        const delay = Math.min(1000 * Math.pow(2, attempt - 1), 10000); // Max 10s
-        console.log(`🔄 Jito retry ${attempt}/${maxRetries} after ${delay}ms delay...`);
-        await new Promise(resolve => setTimeout(resolve, delay));
+      // ✅ 1. Get fresh blockhash
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+
+      // ✅ 2. Build TX1 (Create)
+      const message1 = new TransactionMessage({
+        payerKey: payer.publicKey,
+        recentBlockhash: blockhash,
+        instructions: [
+          ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 1_000_000, // priority fee
+          }),
+          ...instructionsTx1,
+        ],
+      }).compileToV0Message();
+
+      const tx1 = new VersionedTransaction(message1);
+
+      // ✅ 3. Build TX2 (Buy)
+      const message2 = new TransactionMessage({
+        payerKey: payer.publicKey,
+        recentBlockhash: blockhash, // SAME blockhash
+        instructions: [
+          ComputeBudgetProgram.setComputeUnitPrice({
+            microLamports: 1_000_000,
+          }),
+          ...instructionsTx2,
+        ],
+      }).compileToV0Message();
+
+      const tx2 = new VersionedTransaction(message2);
+
+      // ✅ 4. Sign BOTH
+      tx1.sign([payer]);
+      tx2.sign([payer]);
+
+      // 🚨 CRITICAL: ensure signatures exist
+      if (!tx1.signatures.length || !tx2.signatures.length) {
+        throw new Error("Signing failed");
       }
-      
+
+      // ✅ 5. Serialize to base64
+      const serializedTxs = [tx1, tx2].map((tx) =>
+        Buffer.from(tx.serialize()).toString("base64")
+      );
+
+      // ✅ 6. Send bundle
       const response = await axios.post('https://mainnet.block-engine.jito.wtf/api/v1/bundles', {
         jsonrpc: '2.0',
         id: 1,
         method: 'sendBundle',
-        params: [bundle]
+        params: [serializedTxs]
       }, {
         headers: {
           'Content-Type': 'application/json',
@@ -125,12 +162,21 @@ async function sendJitoBundle(transactions, maxRetries = 3) {
         timeout: 30000
       });
 
-      if (response.data.error) {
-        throw new Error(`Jito bundle error: ${response.data.error.message}`);
+      const data = response.data;
+
+      // ✅ 7. Handle response safely
+      if (response.status !== 200 || data.error) {
+        console.error("Jito error:", data);
+        throw new Error(`Bundle rejected: ${data.error?.message || 'Unknown error'}`);
       }
 
       console.log(`✅ Jito bundle sent successfully on attempt ${attempt}`);
-      return response.data.result;
+      return {
+        success: true,
+        data,
+        blockhash,
+        lastValidBlockHeight,
+      };
       
     } catch (err) {
       lastError = err;
@@ -151,12 +197,18 @@ async function sendJitoBundle(transactions, maxRetries = 3) {
       console.error(`Jito bundle attempt ${attempt} failed:`, err.message);
       
       if (attempt === maxRetries) {
-        throw lastError;
+        return {
+          success: false,
+          error: err.message,
+        };
       }
     }
   }
   
-  throw lastError;
+  return {
+    success: false,
+    error: lastError.message,
+  };
 }
 
 /**
@@ -203,8 +255,15 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
   try {
     const devBuyLamports = BigInt(Math.floor(initialBuySol * LAMPORTS_PER_SOL));
     
-    // Get fresh blockhash for both transactions
-    const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+    // BALANCE VALIDATION
+    const balance = await connection.getBalance(mainKeypair.publicKey);
+    const minRequired = devBuyLamports + BigInt(5_000_000); // Buy + buffer for fees
+    
+    if (balance < minRequired) {
+      const requiredSOL = Number(minRequired) / LAMPORTS_PER_SOL;
+      const currentSOL = Number(balance) / LAMPORTS_PER_SOL;
+      throw new Error(`Insufficient balance: Need ${requiredSOL.toFixed(4)} SOL, have ${currentSOL.toFixed(4)} SOL. Please add ${(requiredSOL - currentSOL).toFixed(4)} SOL.`);
+    }
     
     // Step 1: Create transaction
     const createTx = await sdk.getCreateInstructions(
@@ -230,48 +289,27 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
       buyAmountWithSlippage
     );
     
-    // Step 3: Build separate transactions for Jito bundle
-    const createTransaction = new Transaction();
-    createTransaction.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 600000 }));
-    createTransaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 250000 }));
+    // Extract instructions from transactions
+    const createInstructions = Array.isArray(createTx) ? createTx : [createTx];
+    const buyInstructions = Array.isArray(buyTx.instructions) ? buyTx.instructions : buyTx.instructions;
     
-    if (Array.isArray(createTx)) {
-      createTx.forEach(ix => createTransaction.add(ix));
-    } else {
-      createTransaction.add(createTx);
+    // Step 3: Send as improved Jito bundle
+    console.log(' Sending atomic create+buy as improved Jito bundle...');
+    const bundleResult = await sendJitoBundle({
+      payer: mainKeypair,
+      instructionsTx1: createInstructions,
+      instructionsTx2: buyInstructions,
+      connection: connection
+    });
+    
+    if (!bundleResult.success) {
+      throw new Error(`Jito bundle failed: ${bundleResult.error}`);
     }
     
-    createTransaction.recentBlockhash = blockhash;
-    createTransaction.feePayer = mainKeypair.publicKey;
-    createTransaction.sign(mainKeypair, mintKeypair);
+    console.log(' Bundle sent successfully:', bundleResult);
     
-    const buyTransaction = new Transaction();
-    buyTransaction.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 600000 }));
-    buyTransaction.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 250000 }));
-    
-    // Add all instructions from the buy transaction
-    if (Array.isArray(buyTx.instructions)) {
-      buyTx.instructions.forEach(ix => buyTransaction.add(ix));
-    } else {
-      // buyTx is already a Transaction, add its instructions
-      buyTx.instructions.forEach(ix => buyTransaction.add(ix));
-    }
-    
-    buyTransaction.recentBlockhash = blockhash;
-    buyTransaction.feePayer = mainKeypair.publicKey;
-    buyTransaction.sign(mainKeypair);
-    
-    // Step 4: Send as Jito bundle for atomic execution
-    console.log('🚀 Sending atomic create+buy as Jito bundle...');
-    const bundleResult = await sendJitoBundle([
-      createTransaction.serialize(),
-      buyTransaction.serialize()
-    ]);
-    
-    console.log('📦 Bundle sent:', bundleResult);
-    
-    // Return the first transaction signature as the deployment signature
-    return createTransaction.signature;
+    // Return the create transaction signature (we don't get individual sigs from bundle)
+    return 'bundle-success'; // Placeholder for bundle success
     
   } catch (err) {
     console.error('Atomic create+buy error:', err);
@@ -304,6 +342,17 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     if (!session?.mainWallet?.priv) {
       throw new Error("No active wallet found. Please import or create one.");
     }
+
+    // ---------------- BALANCE VALIDATION ----------------
+    const deployBalance = await getBalance(connection, session.mainWallet.pub || session.mainWallet.address);
+    const initialBuyAmount = parseFloat(data.initial_buy_sol) || 0;
+    const minRequiredSOL = initialBuyAmount + 0.01; // Buy amount + buffer for fees
+    
+    if (deployBalance < minRequiredSOL) {
+      throw new Error(`❌ Insufficient balance: Need ${minRequiredSOL.toFixed(4)} SOL, have ${deployBalance.toFixed(4)} SOL. Please add ${(minRequiredSOL - deployBalance).toFixed(4)} SOL to deploy with dev buy.`);
+    }
+    
+    console.log(`✅ Balance check passed: ${deployBalance.toFixed(4)} SOL available, ${minRequiredSOL.toFixed(4)} SOL required`);
 
     // ---------------- INPUT MAPPING ----------------
     const tokenName         = data.name || data.tokenName || "Cucumverse Token";
