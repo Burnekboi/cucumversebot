@@ -210,31 +210,85 @@ async function sendJitoBundle({ payer, instructions, connection, additionalSigne
     try {
       const { blockhash } = await connection.getLatestBlockhash("finalized");
 
-      const message = new TransactionMessage({
-        payerKey: payer.publicKey,
-        recentBlockhash: blockhash,
-        instructions: instructions,
-      }).compileToV0Message();
+      // Jito Bundle expects multiple transactions, not one transaction with multiple instructions
+      // We need to split instructions into logical transaction groups
+      
+      // Group 1: Create instructions (token creation)
+      const createInstructions = instructions.filter(ix => 
+        ix.programId?.toString() !== '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P' && // Not pump.fun buy
+        !ix.keys?.some(k => k.pubkey?.toString()?.includes('Cw8CFyMv')) // Not Jito tip
+      );
+      
+      // Group 2: Buy instruction (pump.fun)
+      const buyInstructions = instructions.filter(ix => 
+        ix.programId?.toString() === '6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P'
+      );
+      
+      // Group 3: Jito tip instruction
+      const tipInstructions = instructions.filter(ix => 
+        ix.keys?.some(k => k.pubkey?.toString()?.includes('Cw8CFyMv'))
+      );
 
-      const tx = new VersionedTransaction(message);
-      tx.sign([payer, ...additionalSigners]);
+      const transactions = [];
+      
+      // Transaction 1: Create token + priority fees
+      if (createInstructions.length > 0) {
+        const createMessage = new TransactionMessage({
+          payerKey: payer.publicKey,
+          recentBlockhash: blockhash,
+          instructions: createInstructions,
+        }).compileToV0Message();
 
-      const serializedTx = Buffer.from(tx.serialize()).toString("base64");
+        const createTx = new VersionedTransaction(createMessage);
+        createTx.sign([payer, ...additionalSigners]);
+        transactions.push(createTx);
+      }
+      
+      // Transaction 2: Buy instruction
+      if (buyInstructions.length > 0) {
+        const buyMessage = new TransactionMessage({
+          payerKey: payer.publicKey,
+          recentBlockhash: blockhash,
+          instructions: buyInstructions,
+        }).compileToV0Message();
 
-      // Use proper Jito bundle format with ny endpoint
+        const buyTx = new VersionedTransaction(buyMessage);
+        buyTx.sign([payer, ...additionalSigners]);
+        transactions.push(buyTx);
+      }
+      
+      // Transaction 3: Jito tip
+      if (tipInstructions.length > 0) {
+        const tipMessage = new TransactionMessage({
+          payerKey: payer.publicKey,
+          recentBlockhash: blockhash,
+          instructions: tipInstructions,
+        }).compileToV0Message();
+
+        const tipTx = new VersionedTransaction(tipMessage);
+        tipTx.sign([payer]);
+        transactions.push(tipTx);
+      }
+
+      // Serialize all transactions for Jito bundle
+      const serializedTransactions = transactions.map(tx => 
+        Buffer.from(tx.serialize()).toString("base64")
+      );
+
+      // Use proper Jito bundle format
       const body = {
         "jsonrpc": "2.0",
         "id": 1,
         "method": "sendBundle",
         "params": [
-          [serializedTx],
+          serializedTransactions,
           {
             "encoding": "base64"
           }
         ]
       };
 
-      const response = await fetch('https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles', {
+      const response = await fetch('https://mainnet.block-engine.jito.wtf/api/v1/bundles', {
         method: 'POST',
         body: JSON.stringify(body),
         headers: {
@@ -249,13 +303,8 @@ async function sendJitoBundle({ payer, instructions, connection, additionalSigne
 
       console.log('✅ Bundle sent successfully:', json.result);
       
-      // Fix: Check if signatures exist and get the first one
-      const signature = tx.signatures && tx.signatures.length > 0 ? tx.signatures[0] : null;
-      if (!signature) {
-        throw new Error('No signature found in transaction');
-      }
-      
-      return { success: true, signature: base58Encode(signature) };
+      // Return the bundle ID instead of trying to encode a single signature
+      return { success: true, signature: json.result };
       
     } catch (err) {
       console.error(`❌ Bundle attempt ${attempt} failed:`, err.message);
