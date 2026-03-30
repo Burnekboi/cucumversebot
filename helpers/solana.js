@@ -163,6 +163,15 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
       const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creatorPubkey.toBuffer()], PUMP_PROGRAM);
       const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM);
       const [userVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), mainKeypair.publicKey.toBuffer()], PUMP_PROGRAM);
+      
+      // Use SDK's global account to get proper fee config
+      try {
+        const globalAccountData = await sdk.getGlobalAccount('confirmed');
+        console.log(`🔧 Using SDK global account for fee configuration`);
+      } catch (e) {
+        console.log(`⚠️ Could not get global account, using derived fee_config`);
+      }
+      
       const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config")], PUMP_PROGRAM);
       const feeProgram = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
       const [bondingCurveV2] = PublicKey.findProgramAddressSync([Buffer.from('bonding-curve-v2'), mintKeypair.publicKey.toBuffer()], PUMP_PROGRAM);
@@ -194,10 +203,10 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
           if (oldKeys[11]) ix.keys.push(oldKeys[11]);
           else ix.keys.push({ pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false });
           
-          // Append the 4 new mandatory accounts!
+          // Append the 4 new mandatory accounts! (fee_config as writable to allow initialization)
           ix.keys.push({ pubkey: globalVolumeAccumulator, isSigner: false, isWritable: true });
           ix.keys.push({ pubkey: userVolumeAccumulator, isSigner: false, isWritable: true });
-          ix.keys.push({ pubkey: feeConfig, isSigner: false, isWritable: false });
+          ix.keys.push({ pubkey: feeConfig, isSigner: false, isWritable: true }); // Make writable for initialization
           ix.keys.push({ pubkey: feeProgram, isSigner: false, isWritable: false });
           ix.keys.push({ pubkey: bondingCurveV2, isSigner: false, isWritable: true });
         }
@@ -206,18 +215,18 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
     
     const buyIx = buyTx.instructions.find(ix => ix.programId.equals(PUMP_PROGRAM));
 
-    // 3. Jito Tip (Targeting a reliable tip account)
-    const tipIx = SystemProgram.transfer({
+    // 3. Jito Tip (Using correct NY tip account as first instruction for priority)
+    const jitoTipIx = SystemProgram.transfer({
       fromPubkey: mainKeypair.publicKey,
-      toPubkey: new PublicKey("Cw8CFyMvGrnCqR8FdiRLS9nEbEEDrgfM9az8LqCacHPy"),
-      lamports: 1000000, // 0.001 SOL
+      toPubkey: new PublicKey("DttWaMuVvTiduZRnguLF7jNxTgiMBZ1hyAumKUiL2KRL"), // NY Jito Tip Account
+      lamports: 1000000, // 0.001 SOL minimum tip
     });
 
-    // 4. Combine all instructions into a single Atomic Set
+    // 4. Combine all instructions into a single Atomic Set (tip first for priority)
     const allInstructions = [
+      jitoTipIx, // Jito tip first for better priority
       ...createInstructions, 
       ...buyTx.instructions,
-      tipIx
     ];
 
     console.log(`🚀 Creating Atomic VersionedTransaction with ${allInstructions.length} instructions...`);
@@ -231,6 +240,19 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
     }).compileToV0Message();
     
     const transaction = new VersionedTransaction(messageV0);
+    
+    // Check transaction size
+    const serializedTx = transaction.serialize();
+    const txSize = serializedTx.length;
+    console.log(`📏 Transaction size: ${txSize} bytes (limit: 1232 bytes)`);
+    
+    if (txSize > 1232) {
+      console.warn(`⚠️ Transaction too large! ${txSize} > 1232 bytes. This may cause Jito 400 errors.`);
+      console.log(`📋 Instruction breakdown:`);
+      allInstructions.forEach((ix, i) => {
+        console.log(`  ${i+1}. ${ix.programId.toString()} (${ix.data.length} bytes data)`);
+      });
+    }
 
     // 6. Sign with both the Payer and the Mint Keypair
     transaction.sign([mainKeypair, mintKeypair]);
@@ -543,65 +565,55 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
         // Fallback to legacy method if Jito fails
         session.liveLogs.push({
           status: 'processing',
-          message: `⚠️ Jito bundle failed, using legacy atomic method...`
+          message: `⚠️ Jito bundle failed, using legacy create+buy method...`
         });
         
-        // Legacy method (current implementation)
-        const createTx = await sdk.getCreateInstructions(
-          mainKeypair.publicKey,
-          tokenName,
-          symbol,
-          metadataUri,
-          mintKeypair
-        );
-
-        const globalAccount = await sdk.getGlobalAccount('confirmed');
-        const buyAmount = globalAccount.getInitialBuyPrice(devBuyLamports);
-        const { calculateWithSlippageBuy } = require('pumpdotfun-sdk/dist/cjs/util');
-        const buyAmountWithSlippage = calculateWithSlippageBuy(devBuyLamports, 500n);
-        
-        // Use enhanced buy instruction with all required accounts
-        const buyTx = await buildBuyInstruction(
+        // First, create the token
+        const createSig = await buildAndSendTx(
           connection,
+          Array.isArray(createTx) ? createTx : [createTx],
           mainKeypair.publicKey,
-          mintKeypair.publicKey,
-          buyAmount,
-          buyAmountWithSlippage
+          [mainKeypair, mintKeypair],
+          { unitLimit: 400000, unitPrice: 250000 }
         );
-
-        const combinedTx = new Transaction();
-        combinedTx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 600000 }));
-        combinedTx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 250000 }));
-        combinedTx.add(createTx);
         
-        // Add all instructions from the buy transaction
-        if (Array.isArray(buyTx.instructions)) {
-          buyTx.instructions.forEach(ix => combinedTx.add(ix));
-        } else {
-          // buyTx is already a Transaction, add its instructions
-          buyTx.instructions.forEach(ix => combinedTx.add(ix));
+        console.log(`✅ Token created: https://solscan.io/tx/${createSig}`);
+        
+        // Wait a moment for creation to propagate
+        await new Promise(resolve => setTimeout(resolve, 2000));
+        
+        // Now try to buy the created token
+        try {
+          const globalAccount = await sdk.getGlobalAccount('confirmed');
+          const buyAmount = globalAccount.getInitialBuyPrice(devBuyLamports);
+          const { calculateWithSlippageBuy } = require('pumpdotfun-sdk/dist/cjs/util');
+          const buyAmountWithSlippage = calculateWithSlippageBuy(devBuyLamports, 500n);
+          
+          // Use enhanced buy instruction with all required accounts
+          const buyTx = await buildBuyInstruction(
+            connection,
+            mainKeypair.publicKey,
+            mintKeypair.publicKey,
+            buyAmount,
+            buyAmountWithSlippage
+          );
+
+          const buySig = await buildAndSendTx(
+            connection,
+            buyTx.instructions,
+            mainKeypair.publicKey,
+            [mainKeypair],
+            { unitLimit: 250000, unitPrice: 250000 }
+          );
+          
+          console.log(`✅ Buy completed: https://solscan.io/tx/${buySig}`);
+          deploymentSig = createSig; // Use create signature as primary
+          
+        } catch (buyError) {
+          console.error(`❌ Buy failed after token creation: ${buyError.message}`);
+          // Still return the create signature since token was created
+          deploymentSig = createSig;
         }
-
-        const { blockhash } = await connection.getLatestBlockhash('confirmed');
-        const messageV0 = new TransactionMessage({
-          payerKey:        mainKeypair.publicKey,
-          recentBlockhash: blockhash,
-          instructions:    combinedTx.instructions,
-        }).compileToV0Message();
-        const versionedTx = new VersionedTransaction(messageV0);
-        versionedTx.sign([mainKeypair, mintKeypair]);
-
-        const sig = await connection.sendTransaction(versionedTx, { skipPreflight: false });
-        console.log(`🔗 Legacy create+buy TX: https://solscan.io/tx/${sig}`);
-
-        const latestBlockhash = await connection.getLatestBlockhash();
-        await connection.confirmTransaction({
-          blockhash:           latestBlockhash.blockhash,
-          lastValidBlockHeight: latestBlockhash.lastValidBlockHeight,
-          signature:           sig,
-        }, 'confirmed');
-
-        deploymentSig = sig;
       }
 
     } else {
