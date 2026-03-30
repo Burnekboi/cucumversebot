@@ -75,13 +75,14 @@ async function buildAndSendTx(connection, instructions, payer, signers, priority
         throw new Error(`Transaction failed: ${JSON.stringify(confirmation.value.err)}`);
       }
       
+      console.log(`✅ Transaction successful on RPC ${connection.rpcEndpoint}: ${sig}`);
       return sig;
       
     } catch (err) {
       lastError = err;
-      console.error(`Attempt ${attempt} failed:`, err.message);
+      console.error(`Attempt ${attempt} failed on ${connection.rpcEndpoint}:`, err.message);
       
-      // If it's the last attempt, throw the error
+      // If it's last attempt, throw error
       if (attempt === maxRetries) {
         throw lastError;
       }
