@@ -141,66 +141,70 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
     
     console.log(`✅ Extracted ${createInstructions.length} create instructions from SDK`);
 
-    // 2. Prepare Buy Instruction (Manual Construction)
+    // 2. Prepare Buy Instruction using SDK (like buildBuyInstruction)
     const globalAccount = await sdk.getGlobalAccount('confirmed');
     const buyAmount = globalAccount.getInitialBuyPrice(devBuyLamports);
-    const buyAmountWithSlippage = buyAmount + (buyAmount * 500n / 10000n); // 5% slippage
-
-    const [bondingCurve] = PublicKey.findProgramAddressSync([Buffer.from("bonding-curve"), mintKeypair.publicKey.toBuffer()], PUMP_PROGRAM);
-    const [associatedBondingCurve] = PublicKey.findProgramAddressSync(
-        [bondingCurve.toBuffer(), new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA").toBuffer(), mintKeypair.publicKey.toBuffer()],
-        new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL")
+    const { calculateWithSlippageBuy } = require('pumpdotfun-sdk/dist/cjs/util');
+    const buyAmountWithSlippage = calculateWithSlippageBuy(devBuyLamports, 500n); // 5% slippage
+    
+    // Use SDK's getBuyInstructions then patch it
+    const buyTx = await sdk.getBuyInstructions(
+      mainKeypair.publicKey,
+      mintKeypair.publicKey,
+      globalAccount.feeRecipient,
+      buyAmount,
+      buyAmountWithSlippage
     );
-    const userATA = getAssociatedTokenAddressSync(mintKeypair.publicKey, mainKeypair.publicKey);
     
-    // THE FIX: Define 13th and 14th accounts
-    const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from('global_volume_accumulator')], PUMP_PROGRAM);
-    const [bondingCurveV2] = PublicKey.findProgramAddressSync([Buffer.from('bonding-curve-v2'), mintKeypair.publicKey.toBuffer()], PUMP_PROGRAM);
-    const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from('fee_config')], PUMP_PROGRAM);
-    const feeProgram = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
-    
-    // Additional required accounts for pump.fun upgrade
-    let creatorPubkey = new PublicKey("11111111111111111111111111111111");
-    try {
-      const bcData = await getBondingCurveData(connection, mintKeypair.publicKey);
-      if (bcData && bcData.creator) creatorPubkey = bcData.creator;
-    } catch (e) {
-      console.error("Could not fetch creator for vault PDA");
+    // Patch the buy instruction like we do in buildBuyInstruction
+    if (buyTx && buyTx.instructions) {
+      // Use main wallet as creator for atomic operations
+      const creatorPubkey = mainKeypair.publicKey;
+      const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creatorPubkey.toBuffer()], PUMP_PROGRAM);
+      const [globalVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("global_volume_accumulator")], PUMP_PROGRAM);
+      const [userVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), mainKeypair.publicKey.toBuffer()], PUMP_PROGRAM);
+      const [feeConfig] = PublicKey.findProgramAddressSync([Buffer.from("fee_config")], PUMP_PROGRAM);
+      const feeProgram = new PublicKey("pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ");
+      const [bondingCurveV2] = PublicKey.findProgramAddressSync([Buffer.from('bonding-curve-v2'), mintKeypair.publicKey.toBuffer()], PUMP_PROGRAM);
+
+      console.log(`🔧 Creator Vault: ${creatorVault.toString()}`);
+      console.log(`🔧 Global Volume Accumulator: ${globalVolumeAccumulator.toString()}`);
+      console.log(`🔧 User Volume Accumulator: ${userVolumeAccumulator.toString()}`);
+      console.log(`🔧 Fee Config: ${feeConfig.toString()}`);
+      console.log(`🔧 Fee Program: ${feeProgram.toString()}`);
+      console.log(`🔧 Bonding Curve V2: ${bondingCurveV2.toString()}`);
+
+      buyTx.instructions.forEach(ix => {
+        if (ix.programId.equals(PUMP_PROGRAM)) {
+          const oldKeys = [...ix.keys];
+          
+          ix.keys = [];
+          // Keep first 9 standard accounts
+          for (let i = 0; i <= 8; i++) {
+            if (oldKeys[i]) ix.keys.push(oldKeys[i]);
+          }
+          
+          // 9: creator_vault (replaces rent)
+          ix.keys.push({ pubkey: creatorVault, isSigner: false, isWritable: true });
+          
+          // 10 & 11: eventAuthority & program
+          if (oldKeys[10]) ix.keys.push(oldKeys[10]);
+          else ix.keys.push({ pubkey: new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"), isSigner: false, isWritable: false });
+          
+          if (oldKeys[11]) ix.keys.push(oldKeys[11]);
+          else ix.keys.push({ pubkey: PUMP_PROGRAM, isSigner: false, isWritable: false });
+          
+          // Append the 4 new mandatory accounts!
+          ix.keys.push({ pubkey: globalVolumeAccumulator, isSigner: false, isWritable: true });
+          ix.keys.push({ pubkey: userVolumeAccumulator, isSigner: false, isWritable: true });
+          ix.keys.push({ pubkey: feeConfig, isSigner: false, isWritable: false });
+          ix.keys.push({ pubkey: feeProgram, isSigner: false, isWritable: false });
+          ix.keys.push({ pubkey: bondingCurveV2, isSigner: false, isWritable: true });
+        }
+      });
     }
-    const [creatorVault] = PublicKey.findProgramAddressSync([Buffer.from("creator-vault"), creatorPubkey.toBuffer()], PUMP_PROGRAM);
-    const [userVolumeAccumulator] = PublicKey.findProgramAddressSync([Buffer.from("user_volume_accumulator"), mainKeypair.publicKey.toBuffer()], PUMP_PROGRAM);
-
-    console.log(`🔧 Bonding Curve: ${bondingCurve.toString()}`);
-    console.log(`🔧 Global Volume Accumulator: ${globalVolumeAccumulator.toString()}`);
-    console.log(`🔧 Bonding Curve V2: ${bondingCurveV2.toString()}`);
-    console.log(`🔧 Fee Config: ${feeConfig.toString()}`);
-    console.log(`🔧 Fee Program: ${feeProgram.toString()}`);
-
-    const buyIx = await sdk.program.methods
-      .buy(new anchor.BN(buyAmount.toString()), new anchor.BN(buyAmountWithSlippage.toString()))
-      .accounts({
-        global: new PublicKey("4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf"),
-        feeRecipient: new PublicKey("62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV"),
-        mint: mintKeypair.publicKey,
-        bondingCurve: bondingCurve,
-        associatedBondingCurve: associatedBondingCurve,
-        associatedUser: userATA,
-        user: mainKeypair.publicKey,
-        systemProgram: SystemProgram.programId,
-        tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
-        rent: new PublicKey("SysvarRent111111111111111111111111111111111"),
-        eventAuthority: new PublicKey("Ce6TQqeHC9p8KetsN6JsjHK7UTZk7nasjjnr7XxXp9F1"),
-        program: PUMP_PROGRAM,
-      })
-      .remainingAccounts([
-        { pubkey: creatorVault, isSigner: false, isWritable: true },
-        { pubkey: globalVolumeAccumulator, isSigner: false, isWritable: true },
-        { pubkey: userVolumeAccumulator, isSigner: false, isWritable: true },
-        { pubkey: bondingCurveV2, isSigner: false, isWritable: true },
-        { pubkey: feeConfig, isSigner: false, isWritable: false },
-        { pubkey: feeProgram, isSigner: false, isWritable: false },
-      ])
-      .instruction();
+    
+    const buyIx = buyTx.instructions.find(ix => ix.programId.equals(PUMP_PROGRAM));
 
     // 3. Jito Tip (Targeting a reliable tip account)
     const tipIx = SystemProgram.transfer({
@@ -212,7 +216,7 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
     // 4. Combine all instructions into a single Atomic Set
     const allInstructions = [
       ...createInstructions, 
-      buyIx,
+      ...buyTx.instructions,
       tipIx
     ];
 
