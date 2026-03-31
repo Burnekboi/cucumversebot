@@ -1575,9 +1575,17 @@ Balance: ${balance.toFixed(4)} SOL`,
     session.isTrading = !session.isTrading;
 
     if (!session.isTrading) {
+      const { getBalance } = require('../helpers/solana');
+      const mainBalance = await getBalance(connection, session.mainWallet.pub || session.mainWallet.address);
+      
+      const { actionMenu } = require('../panels');
+      const tradePanel = actionMenu(session, mainBalance.toFixed(4));
+      
       return editText('🔴 Trading stopped.', {
         chat_id: chatId,
-        message_id: msgId
+        message_id: msgId,
+        parse_mode: 'Markdown',
+        ...tradePanel
       });
     }
 
