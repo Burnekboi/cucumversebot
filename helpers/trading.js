@@ -1,6 +1,5 @@
 const { Keypair, PublicKey, LAMPORTS_PER_SOL, Transaction, ComputeBudgetProgram } = require('@solana/web3.js');
 const { base58Decode } = require('../utils/base58');
-const { getTradingConnection } = require('../app');
 const {
   getBalance,
   getTokenBalance,
