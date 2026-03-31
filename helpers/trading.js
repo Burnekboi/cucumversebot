@@ -9,7 +9,8 @@ const {
   buildBuyInstruction,
   getBondingCurveData,
   calcBuyTokens,
-  sendTx
+  sendTx,
+  executeHybridBatchBuying
 } = require('./solana');
 
 // ---------------- MAIN TRADING ----------------
@@ -22,7 +23,7 @@ async function performRealTrading(bot, connection, session, chatId) {
     return;
   }
 
-  console.log(`🤖 Starting PARALLEL bot wallet trading for ${contractAddress}`);
+  console.log(`🤖 Starting HYBRID BATCH bot wallet trading for ${contractAddress}`);
   console.log(`📊 Config: minBuy=${minBuy}, maxBuy=${maxBuy}, slippage=${slippage}`);
   console.log(`👥 Active bots: ${session.buyers?.length || 0}`);
 
@@ -67,146 +68,19 @@ async function performRealTrading(bot, connection, session, chatId) {
   // Add initial trading message
   session.liveLogs.push({ 
     status: 'processing', 
-    message: `🚀 Initiating PARALLEL bot wallet buying for verified pump.fun token...` 
+    message: `🚀 Initiating HYBRID BATCH bot wallet buying (10 per second, 1.5s interval)...` 
   });
 
-  let successfulBuys = 0;
-  let failedBuys = 0;
-
-  // PARALLEL EXECUTION - All bots buy at once
-  console.log(`🔄 Starting parallel execution of ${session.buyers.length} bots`);
-
-  await Promise.all(session.buyers.map(async (buyer, walletIndex) => {
-    let success = false;
-    let attempts = 0;
-    const maxRetries = 3;
-
-    const logEntry = {
-      walletNum: walletIndex + 1,
-      status: 'processing',
-      message: `⏳ Bot #${walletIndex + 1}: Checking balance...`
-    };
-
-    session.liveLogs.push(logEntry);
-
-    while (attempts < maxRetries && !success) {
-      try {
-        console.log(`🔍 Bot #${walletIndex + 1} - Attempt ${attempts + 1}/${maxRetries}`);
-        
-        // Use trading connection for better rate limiting
-        const tradingConnection = getTradingConnection();
-        
-        const solBalance = await getBalance(tradingConnection, buyer.pub);
-        const feeBuffer = 0.005;
-
-        console.log(`💰 Bot #${walletIndex + 1} balance: ${solBalance.toFixed(4)} SOL`);
-
-        if (solBalance <= minBuy + feeBuffer) {
-          logEntry.status = 'failed';
-          logEntry.message = `Bot #${walletIndex + 1}: Insufficient SOL (${solBalance.toFixed(4)} < ${(minBuy + feeBuffer).toFixed(4)})`;
-          failedBuys++;
-          return;
-        }
-
-        const buyAmount = Math.random() * (maxBuy - minBuy) + minBuy;
-
-        if (buyAmount > solBalance - feeBuffer) {
-          logEntry.status = 'failed';
-          logEntry.message = `Bot #${walletIndex + 1}: Insufficient for buy (${buyAmount.toFixed(4)} > ${(solBalance - feeBuffer).toFixed(4)})`;
-          failedBuys++;
-          return;
-        }
-
-        logEntry.message = `🔄 Bot #${walletIndex + 1}: Buying ${buyAmount.toFixed(4)} SOL (Attempt ${attempts + 1})`;
-
-        const beforeBalance = await getTokenBalance(tradingConnection, buyer.pub, contractAddress);
-        console.log(`📊 Bot #${walletIndex + 1} before balance: ${beforeBalance} tokens`);
-
-        const buyerKeypair = Keypair.fromSecretKey(base58Decode(buyer.priv));
-        const mint         = new PublicKey(contractAddress);
-        const buyLamports  = BigInt(Math.floor(buyAmount * LAMPORTS_PER_SOL));
-
-        // Get current bonding curve state for accurate token amount
-        const bondingCurveData = await getBondingCurveData(tradingConnection, mint);
-        if (!bondingCurveData || !bondingCurveData.virtualSolReserves) {
-          throw new Error('Could not fetch bonding curve data');
-        }
-
-        const { virtualSolReserves, virtualTokenReserves } = bondingCurveData;
-        const tokenAmt   = calcBuyTokens(buyLamports, virtualSolReserves, virtualTokenReserves);
-        const maxSolCost = buyLamports * 110n / 100n; // 10% slippage
-
-        console.log(`🎯 Bot #${walletIndex + 1} buying ${tokenAmt} tokens for ${buyAmount.toFixed(4)} SOL`);
-
-        const buyTx = await buildBuyInstruction(tradingConnection, buyerKeypair.publicKey, mint, tokenAmt, maxSolCost);
-
-        const tx = new Transaction();
-        tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200000 }));
-        tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 250000 }));
-        
-        // Add all instructions from buyTx (not just the buy instruction)
-        if (buyTx.instructions) {
-          buyTx.instructions.forEach(ix => tx.add(ix));
-        } else {
-          tx.add(buyTx);
-        }
-
-        console.log(`📤 Bot #${walletIndex + 1} sending transaction...`);
-        const sig = await sendTx(tradingConnection, tx, [buyerKeypair]);
-        console.log(`✅ Bot #${walletIndex + 1} TX sent: https://solscan.io/tx/${sig}`);
-
-        // CRITICAL: Verify buy actually worked
-        console.log(`🔍 Bot #${walletIndex + 1} verifying purchase...`);
-        await new Promise(resolve => setTimeout(resolve, 3000)); // Wait for confirmation
-
-        const afterBalance = await getTokenBalance(tradingConnection, buyer.pub, contractAddress);
-        console.log(`📊 Bot #${walletIndex + 1} after balance: ${afterBalance} tokens`);
-
-        if (afterBalance <= beforeBalance) {
-          throw new Error(`No tokens received. Before: ${beforeBalance}, After: ${afterBalance}`);
-        }
-
-        // SUCCESS
-        const tokenReceived = afterBalance - beforeBalance;
-        const solLeft = await getBalance(tradingConnection, buyer.pub);
-
-        console.log(`🎉 Bot #${walletIndex + 1} SUCCESS: ${tokenReceived} tokens for ${buyAmount.toFixed(4)} SOL`);
-
-        logEntry.status = 'success';
-        logEntry.solBought = buyAmount.toFixed(4);
-        logEntry.tokenAmount = tokenReceived.toFixed(2);
-        logEntry.solBal = solLeft.toFixed(4);
-        logEntry.message = `🤖 Bot #${walletIndex + 1}\n  💰 ${buyAmount.toFixed(4)} SOL\n  🪙 ${tokenReceived.toFixed(2)} tokens\n  🔗 ${sig.slice(0, 16)}...`;
-
-        buyer.trade = {
-          entryPricePerToken: buyAmount / tokenReceived,
-          entrySol: buyAmount
-        };
-
-        success = true;
-        successfulBuys++;
-
-      } catch (err) {
-        attempts++;
-        console.error(`❌ Buy error bot ${walletIndex + 1}:`, err.message);
-
-        if (attempts >= maxRetries) {
-          logEntry.status = 'failed';
-          logEntry.message = `❌ Bot #${walletIndex + 1}: ${err.message}`;
-          failedBuys++;
-        } else {
-          logEntry.message = `🔄 Bot #${walletIndex + 1}: Retrying... (${attempts}/${maxRetries})`;
-          await new Promise(r => setTimeout(r, 2000)); // Wait between retries
-        }
-      }
-    }
-  }));
+  // Execute hybrid batch buying
+  const { totalSuccess, totalFailed } = await executeHybridBatchBuying(
+    bot, connection, session, chatId, contractAddress, session.buyers
+  );
 
   // Summary
-  console.log(`📊 Parallel bot trading summary: ${successfulBuys} successful, ${failedBuys} failed`);
+  console.log(`📊 Hybrid batch trading summary: ${totalSuccess} successful, ${totalFailed} failed`);
   session.liveLogs.push({ 
     status: 'completed', 
-    message: `🚀 Parallel bot swarm completed: ${successfulBuys} successful, ${failedBuys} failed` 
+    message: `🚀 Hybrid batch swarm completed: ${totalSuccess} successful, ${totalFailed} failed` 
   });
 
   startSellMonitor(bot, connection, session, chatId);
@@ -339,10 +213,120 @@ async function sellAllTokens(bot, connection, session, chatId) {
   }));
 }
 
+// ---------------- DEV SELL ----------------
+async function sellDevTokens(bot, connection, session, chatId, sellPercent = 100) {
+  if (!session.mainWallet || !session.mainWallet.priv) {
+    await bot.sendMessage(chatId, '❌ Dev wallet not configured');
+    return;
+  }
+
+  const { contractAddress } = session.tradeConfig;
+  if (!contractAddress) {
+    await bot.sendMessage(chatId, '❌ No token contract address set');
+    return;
+  }
+
+  const devKeypair = Keypair.fromSecretKey(base58Decode(session.mainWallet.priv));
+  
+  try {
+    // Get current token balance
+    const tokenBalance = await getTokenBalance(connection, devKeypair.publicKey, contractAddress);
+    
+    if (tokenBalance <= 0) {
+      await bot.sendMessage(chatId, '❌ Dev wallet has no tokens to sell');
+      return;
+    }
+
+    // Calculate sell amount based on percentage
+    let sellAmount;
+    if (sellPercent === 100) {
+      sellAmount = tokenBalance; // Sell all
+    } else {
+      sellAmount = tokenBalance * (sellPercent / 100); // Sell percentage
+    }
+
+    console.log(`🔥 Dev selling ${sellAmount} tokens (${sellPercent}% of ${tokenBalance})`);
+
+    session.liveLogs.push({
+      status: 'processing',
+      message: `🔥 Dev wallet selling ${sellPercent}% (${sellAmount.toFixed(2)} tokens)...`
+    });
+
+    // Execute sell
+    const solReceived = await sellTokenAmount(
+      bot,
+      connection,
+      { pub: devKeypair.publicKey, priv: session.mainWallet.priv },
+      sellAmount,
+      contractAddress,
+      chatId,
+      'DEV'
+    );
+
+    const remainingBalance = await getTokenBalance(connection, devKeypair.publicKey, contractAddress);
+    const solBalance = await getBalance(connection, devKeypair.publicKey);
+
+    session.liveLogs.push({
+      status: 'success',
+      message: `💰 Dev wallet sold ${sellAmount.toFixed(2)} tokens → ${solReceived?.toFixed(4) || '0'} SOL`
+    });
+
+    session.liveLogs.push({
+      status: 'success', 
+      message: `📊 Remaining: ${remainingBalance.toFixed(2)} tokens | SOL: ${solBalance.toFixed(4)}`
+    });
+
+    await bot.sendMessage(
+      chatId,
+      `✅ *Dev Sell Complete!*\n\n` +
+      `💰 Sold: ${sellAmount.toFixed(2)} tokens (${sellPercent}%)\n` +
+      `💸 Received: ${solReceived?.toFixed(4) || '0'} SOL\n` +
+      `📊 Remaining: ${remainingBalance.toFixed(2)} tokens\n` +
+      `💵 SOL Balance: ${solBalance.toFixed(4)}`,
+      { parse_mode: 'Markdown' }
+    );
+
+  } catch (error) {
+    console.error('❌ Dev sell error:', error);
+    session.liveLogs.push({
+      status: 'error',
+      message: `❌ Dev sell failed: ${error.message}`
+    });
+    await bot.sendMessage(chatId, `❌ Dev sell failed: ${error.message}`);
+  }
+}
+
+// Handle custom sell percentage input
+async function handleCustomDevSell(bot, connection, session, chatId) {
+  await bot.sendMessage(
+    chatId,
+    `🔢 *Enter sell percentage (1-99):*\n\n` +
+    `Please enter a number between 1 and 99 for the percentage of tokens to sell.\n` +
+    `Example: 50 (to sell 50% of tokens)`,
+    { parse_mode: 'Markdown' }
+  );
+
+  // Set up input handler
+  session.pendingInput = {
+    resolve: async (input) => {
+      const percent = parseInt(input);
+      
+      if (isNaN(percent) || percent < 1 || percent > 99) {
+        await bot.sendMessage(chatId, '❌ Invalid percentage. Please enter a number between 1 and 99.');
+        return;
+      }
+
+      await sellDevTokens(bot, connection, session, chatId, percent);
+    }
+  };
+}
+
 // ---------------- EXPORTS ----------------
 module.exports = {
   performRealTrading,
   startSellMonitor,
   stopAllTrading,
-  sellAllTokens
+  sellAllTokens,
+  sellDevTokens,
+  handleCustomDevSell
 };
