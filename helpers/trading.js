@@ -1,5 +1,6 @@
 const { Keypair, PublicKey, LAMPORTS_PER_SOL, Transaction, ComputeBudgetProgram } = require('@solana/web3.js');
 const { base58Decode } = require('../utils/base58');
+const { getTradingConnection } = require('../app');
 const {
   getBalance,
   getTokenBalance,
@@ -93,7 +94,7 @@ async function performRealTrading(bot, connection, session, chatId) {
         console.log(`🔍 Bot #${walletIndex + 1} - Attempt ${attempts + 1}/${maxRetries}`);
         
         // Use trading connection for better rate limiting
-        const tradingConnection = require('../app').getTradingConnection();
+        const tradingConnection = getTradingConnection();
         
         const solBalance = await getBalance(tradingConnection, buyer.pub);
         const feeBuffer = 0.005;
