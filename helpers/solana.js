@@ -98,9 +98,9 @@ async function buildAndSendTx(connection, instructions, payer, signers, priority
 }
 
 /**
- * 🚀 FAST ATOMIC DEV BUY (NO JITO - MANUAL PRIORITY)
- * ==================================================
- * Buys existing token using stored CA from session.tradeConfig.contractAddress
+ * 🚀 FAST ATOMIC CREATE + BUY (MANUAL PRIORITY)
+ * ==============================================
+ * Creates token then immediate priority buy for dev wallet
  */
 async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypair, tokenName, symbol, metadataUri, initialBuySol, session) {
   try {
@@ -358,102 +358,6 @@ async function executeHybridBatchBuying(bot, connection, session, chatId, contra
 }
 
 /**
- * 📦 ENHANCED JITO BUNDLE SENDER WITH PROPER ENDPOINTS
- */
-async function sendJitoBundle({ transactions, maxRetries = 3 }) {
-  const bs58 = require('bs58');
-  
-  // Multiple Jito endpoints for redundancy
-  const jitoEndpoints = [
-    'https://mainnet.block-engine.jito.wtf/api/v1/bundles',
-    'https://ny.mainnet.block-engine.jito.wtf/api/v1/bundles',
-    'https://tokyo.mainnet.block-engine.jito.wtf/api/v1/bundles'
-  ];
-  
-  for (let attempt = 1; attempt <= maxRetries; attempt++) {
-    for (const endpoint of jitoEndpoints) {
-      try {
-        console.log(`🔍 Debug - Building Jito bundle payload for ${endpoint}...`);
-        
-        const bundle = transactions.map(tx => {
-          // Force base58 encoding for Jito Engine
-          return bs58.default ? bs58.default.encode(tx.serialize()) : bs58.encode(tx.serialize());
-        });
-
-        console.log(`🚀 Sending bundle to ${endpoint} (Attempt ${attempt}/${maxRetries})`);
-        
-        // 🚀 SEND TO JITO WITH ENHANCED HEADERS
-        const response = await fetch(endpoint, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'User-Agent': 'Cucumverse-Bot/1.0',
-          },
-          body: JSON.stringify({
-            jsonrpc: "2.0",
-            id: 1,
-            method: "sendBundle",
-            params: [bundle]
-          }),
-          timeout: 15000, // 15 second timeout
-        });
-
-        console.log(`📊 Response status: ${response.status} ${response.statusText}`);
-        console.log(`📊 Response headers:`, Object.fromEntries(response.headers.entries()));
-
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error(`❌ Jito API Error Response: ${errorText}`);
-          throw new Error(`HTTP ${response.status}: ${response.statusText} - ${errorText}`);
-        }
-
-        const data = await response.json();
-        console.log(`📊 Jito API Response:`, JSON.stringify(data, null, 2));
-        
-        if (data.error) {
-          console.error(`❌ Jito API Error: ${JSON.stringify(data.error)}`);
-          throw new Error(data.error.message || 'Jito API error');
-        }
-        
-        if (!data.result) {
-          throw new Error('No result returned from Jito bundle');
-        }
-
-        const bundleId = data.result;
-        console.log('✅ Bundle sent successfully:', bundleId);
-        
-        // Wait for bundle confirmation
-        console.log('⏳ Waiting for bundle confirmation...');
-        await new Promise(resolve => setTimeout(resolve, 3000));
-        
-        return { success: true, signature: bundleId };
-        
-      } catch (err) {
-        console.error(`❌ Bundle attempt ${attempt} failed for ${endpoint}:`, err.message);
-        
-        // If this is not the last endpoint, try the next one
-        if (endpoint !== jitoEndpoints[jitoEndpoints.length - 1]) {
-          console.log('🔄 Trying next Jito endpoint...');
-          continue;
-        }
-        
-        // If this is the last endpoint and last attempt, return failure
-        if (attempt === maxRetries) {
-          return { success: false, error: err.message };
-        }
-        
-        // Wait before retrying (exponential backoff)
-        const delay = Math.min(2000 * Math.pow(2, attempt - 1), 10000); // Max 10s
-        console.log(`⏳ Waiting ${delay}ms before retry...`);
-        await new Promise(r => setTimeout(r, delay));
-      }
-    }
-  }
-  
-  return { success: false, error: 'All Jito endpoints failed after maximum retries' };
-}
-
-/**
  * ===============================
  * 🚀 MAIN DEPLOYMENT HANDLER
  * ===============================
@@ -497,7 +401,6 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
     const initialBuy        = parseFloat(data.initial_buy_sol) || 0;
     const selectedBotIds    = data.bot_fleet || [];
     const autoBuyEnabled    = data.auto_buy || false;
-    const jitoBundleEnabled = data.jito_bundle || false;
 
     session.liveLogs = [];
 
@@ -616,7 +519,7 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
 
     if (devBuyLamports > 0n) {
       // ─────────────────────────────────────────────────────────────────
-      // FAST ATOMIC CREATE + DEV BUY (NO JITO - MANUAL PRIORITY)
+      // FAST ATOMIC CREATE + DEV BUY (MANUAL PRIORITY)
       // Creates token then immediate priority buy for dev wallet
       // ─────────────────────────────────────────────────────────────────
       console.log(`🚀 Fast atomic create+buy (${initialBuy} SOL) — manual priority execution`);
