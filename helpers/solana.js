@@ -776,6 +776,27 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
       session.tradeConfig.takeProfitPercent  = parseFloat(data.config.takeProfit)  || 20;
     }
 
+    // ---------------- SAVE LATEST TOKEN FOR BOT WALLETS ----------------
+    try {
+      const { saveLatestToken } = require('./tokenDatabase');
+      await saveLatestToken({
+        mintAddress,
+        symbol,
+        tokenName,
+        creator: session.mainWallet.pub.toString(),
+        devBuyAmount: devBuyLamports > 0n ? initialBuy : 0,
+        deploymentSig,
+        chatId,
+        sessionId: chatId,
+        tradeConfig: session.tradeConfig
+      });
+      
+      console.log(`💾 Latest token ${symbol} saved for bot wallet trading`);
+      
+    } catch (dbError) {
+      console.error('❌ Error saving latest token:', dbError);
+    }
+
     session.liveLogs.push({ status: 'success', message: `🎉 ${symbol} deployed successfully!` });
 
     // ---------------- SWARM BUY (bot wallets) ----------------
