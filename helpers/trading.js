@@ -15,7 +15,6 @@ const {
 // ---------------- MAIN TRADING ----------------
 async function performRealTrading(bot, connection, session, chatId) {
   const { contractAddress, minBuy, maxBuy, slippage } = session.tradeConfig;
-  const jitoBundleEnabled = session.jitoBundle || false;
 
   if (!contractAddress) {
     await bot.sendMessage(chatId, '❌ Contract address not set.');
