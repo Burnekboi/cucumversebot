@@ -296,6 +296,137 @@ async function executeAtomicCreateAndBuy(connection, sdk, mainKeypair, mintKeypa
 }
 
 /**
+ *   HYBRID BATCH BUYING (10 per second, 1.5s interval)
+ */
+async function executeHybridBatchBuying(bot, connection, session, chatId, contractAddress, activeBuyers) {
+  const BATCH_SIZE = 10;
+  const BATCH_INTERVAL = 1500; // 1.5 seconds between batches
+  
+  console.log(`🚀 Starting hybrid batch buying: ${activeBuyers.length} wallets in batches of ${BATCH_SIZE}`);
+  
+  let totalSuccess = 0;
+  let totalFailed = 0;
+  let batchIndex = 0;
+  
+  // Process wallets in batches
+  for (let i = 0; i < activeBuyers.length; i += BATCH_SIZE) {
+    batchIndex++;
+    const batch = activeBuyers.slice(i, i + BATCH_SIZE);
+    
+    console.log(`📦 Batch ${batchIndex}: Processing ${batch.length} wallets (${i + 1}-${Math.min(i + BATCH_SIZE, activeBuyers.length)})`);
+    
+    // Execute batch in parallel (within the batch)
+    const batchPromises = batch.map(async (buyer, batchIndexWithinBatch) => {
+      try {
+        const { minBuy, maxBuy, slippage } = session.tradeConfig;
+        const buyAmount = minBuy + Math.random() * (maxBuy - minBuy);
+        
+        console.log(`🤖 Bot ${i + batchIndexWithinBatch + 1}: Buying ${buyAmount.toFixed(4)} SOL of ${contractAddress.slice(0, 8)}...`);
+        
+        // Use the same buy logic as individual bot wallets
+        const beforeBalance = await getTokenBalance(connection, buyer.pub, contractAddress);
+        
+        const buyLamports = BigInt(Math.floor(buyAmount * LAMPORTS_PER_SOL));
+        const bondingCurveData = await getBondingCurveData(connection, new PublicKey(contractAddress));
+        
+        if (!bondingCurveData || !bondingCurveData.virtualSolReserves) {
+          throw new Error('Could not fetch bonding curve data');
+        }
+        
+        const { virtualSolReserves, virtualTokenReserves } = bondingCurveData;
+        const tokenAmt = calcBuyTokens(buyLamports, virtualSolReserves, virtualTokenReserves);
+        const maxSolCost = buyLamports * 110n / 100n; // 10% slippage
+        
+        const buyTx = await buildBuyInstruction(
+          connection,
+          buyer.pub,
+          new PublicKey(contractAddress),
+          tokenAmt,
+          maxSolCost
+        );
+        
+        const tx = new Transaction();
+        tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200000 }));
+        tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 250000 }));
+        
+        if (buyTx.instructions) {
+          buyTx.instructions.forEach(ix => tx.add(ix));
+        } else {
+          tx.add(buyTx);
+        }
+        
+        const buyerKeypair = Keypair.fromSecretKey(base58Decode(buyer.priv));
+        const signature = await sendTx(connection, tx, [buyerKeypair]);
+        
+        // Verify buy actually worked
+        await new Promise(resolve => setTimeout(resolve, 2000)); // Wait for confirmation
+        const afterBalance = await getTokenBalance(connection, buyer.pub, contractAddress);
+        
+        if (afterBalance <= beforeBalance) {
+          throw new Error(`No tokens received. Before: ${beforeBalance}, After: ${afterBalance}`);
+        }
+        
+        const tokenReceived = afterBalance - beforeBalance;
+        const solLeft = await getBalance(connection, buyer.pub);
+        
+        // Set trade info for this bot
+        buyer.trade = {
+          entryPricePerToken: buyAmount / tokenReceived,
+          entrySol: buyAmount
+        };
+        
+        console.log(`✅ Bot ${i + batchIndexWithinBatch + 1}: SUCCESS - ${tokenReceived} tokens for ${buyAmount} SOL`);
+        
+        return {
+          success: true,
+          botIndex: i + batchIndexWithinBatch + 1,
+          tokens: tokenReceived,
+          solSpent: buyAmount,
+          signature: signature.slice(0, 16)
+        };
+        
+      } catch (error) {
+        console.error(`❌ Bot ${i + batchIndexWithinBatch + 1}: FAILED - ${error.message}`);
+        return {
+          success: false,
+          botIndex: i + batchIndexWithinBatch + 1,
+          error: error.message
+        };
+      }
+    });
+    
+    // Wait for current batch to complete
+    const batchResults = await Promise.all(batchPromises);
+    
+    // Count results
+    batchResults.forEach(result => {
+      if (result.success) {
+        totalSuccess++;
+      } else {
+        totalFailed++;
+      }
+    });
+    
+    // Update session with batch progress
+    const progress = Math.min(((i + BATCH_SIZE) / activeBuyers.length) * 100, 100);
+    session.liveLogs.push({
+      status: 'processing',
+      message: `📦 Batch ${batchIndex} complete: ${batchResults.filter(r => r.success).length}/${batch.length} successful (${progress.toFixed(1)}% total)`
+    });
+    
+    // Wait before next batch (except for the last batch)
+    if (i + BATCH_SIZE < activeBuyers.length) {
+      console.log(`⏳ Waiting ${BATCH_INTERVAL}ms before next batch...`);
+      await new Promise(resolve => setTimeout(resolve, BATCH_INTERVAL));
+    }
+  }
+  
+  console.log(`🎯 Hybrid batch buying complete: ${totalSuccess} success, ${totalFailed} failed`);
+  
+  return { totalSuccess, totalFailed };
+}
+
+/**
  * 📦 ENHANCED JITO BUNDLE SENDER WITH PROPER ENDPOINTS
  */
 async function sendJitoBundle({ transactions, maxRetries = 3 }) {
@@ -629,72 +760,95 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
           throw new Error(`Token creation failed - bonding curve not found. TX: ${createSig}`);
         }
         
-        // Now try to buy the created token
+        // Now use bot wallet functions for dev buy (priority execution)
         let devBuySignature = null;
         
         try {
-          console.log(`🛒 Attempting dev buy of ${initialBuy} SOL tokens...`);
+          console.log(`🛒 Attempting priority dev buy of ${initialBuy} SOL tokens using bot wallet functions...`);
           
-          const globalAccount = await sdk.getGlobalAccount('confirmed');
-          const buyAmount = globalAccount.getInitialBuyPrice(devBuyLamports);
-          const { calculateWithSlippageBuy } = require('pumpdotfun-sdk/dist/cjs/util');
-          const buyAmountWithSlippage = calculateWithSlippageBuy(devBuyLamports, 500n);
+          // Create a temporary bot wallet structure for dev wallet
+          const devBotWallet = {
+            pub: mainKeypair.publicKey,
+            priv: session.mainWallet.priv,
+            trade: null
+          };
           
-          // Check if dev wallet has enough SOL for buy
-          const currentBalance = await connection.getBalance(mainKeypair.publicKey);
-          const totalCost = buyAmount + BigInt(5000000); // Buy amount + buffer for fees
+          // Use the same buy logic as bot wallets but with priority
+          const beforeBalance = await getTokenBalance(connection, devBotWallet.pub, mintAddress);
+          console.log(`📊 Dev wallet before balance: ${beforeBalance} tokens`);
           
-          if (currentBalance < totalCost) {
-            const needed = Number(totalCost - currentBalance) / LAMPORTS_PER_SOL;
-            throw new Error(`❌ INSUFFICIENT SOL for dev buy: Need ${needed.toFixed(4)} more SOL. Current: ${(currentBalance / LAMPORTS_PER_SOL).toFixed(4)} SOL`);
+          const buyLamports = BigInt(Math.floor(initialBuy * LAMPORTS_PER_SOL));
+          
+          // Get current bonding curve state for accurate token amount
+          const bondingCurveData = await getBondingCurveData(connection, mintKeypair.publicKey);
+          if (!bondingCurveData || !bondingCurveData.virtualSolReserves) {
+            throw new Error('Could not fetch bonding curve data for dev buy');
           }
           
-          console.log(`✅ Dev buy balance check passed: ${(currentBalance / LAMPORTS_PER_SOL).toFixed(4)} SOL available`);
+          const { virtualSolReserves, virtualTokenReserves } = bondingCurveData;
+          const tokenAmt = calcBuyTokens(buyLamports, virtualSolReserves, virtualTokenReserves);
+          const maxSolCost = buyLamports * 110n / 100n; // 10% slippage
           
-          // Use enhanced buy instruction with all required accounts
+          console.log(`🎯 Dev wallet buying ${tokenAmt} tokens for ${initialBuy} SOL (priority)`);
+          
           const buyTx = await buildBuyInstruction(
             connection,
-            mainKeypair.publicKey,
+            devBotWallet.pub,
             mintKeypair.publicKey,
-            buyAmount,
-            buyAmountWithSlippage
-          );
-
-          console.log(`🚀 Sending dev buy transaction...`);
-          devBuySignature = await buildAndSendTx(
-            connection,
-            buyTx.instructions,
-            mainKeypair.publicKey,
-            [mainKeypair],
-            { unitLimit: 250000, unitPrice: 250000 }
+            tokenAmt,
+            maxSolCost
           );
           
-          console.log(`✅ Dev buy transaction sent: https://solscan.io/tx/${devBuySignature}`);
+          const tx = new Transaction();
+          tx.add(ComputeBudgetProgram.setComputeUnitLimit({ units: 200000 }));
+          tx.add(ComputeBudgetProgram.setComputeUnitPrice({ microLamports: 250000 }));
           
-          // CRITICAL: Verify the buy actually worked by checking bonding curve reserves changed
-          console.log(`🔍 Verifying dev buy actually succeeded...`);
-          await new Promise(resolve => setTimeout(resolve, 3000)); // Wait for confirmation
-          
-          const preBuyData = await getBondingCurveData(connection, mintKeypair.publicKey);
-          const preBuySol = preBuyData?.virtualSolReserves || BigInt(0);
-          
-          // Wait a bit more for the transaction to fully process
-          await new Promise(resolve => setTimeout(resolve, 2000));
-          
-          const postBuyData = await getBondingCurveData(connection, mintKeypair.publicKey);
-          const postBuySol = postBuyData?.virtualSolReserves || BigInt(0);
-          
-          if (postBuyData && postBuyData.virtualSolReserves && postBuySol > preBuySol) {
-            devBuyActuallySucceeded = true;
-            console.log(`✅ Dev buy VERIFIED - SOL reserves increased from ${preBuySol} to ${postBuySol}`);
-            session.liveLogs.push({ status: 'success', message: `💰 Dev Buy Complete! ${initialBuy} SOL → ~${estDevTokens} tokens` });
-            session.liveLogs.push({ status: 'success', message: `👑 Dev wallet is FIRST BUYER ✅ TX: ${devBuySignature.slice(0, 16)}...` });
+          // Add all instructions from buyTx
+          if (buyTx.instructions) {
+            buyTx.instructions.forEach(ix => tx.add(ix));
           } else {
-            console.error(`❌ Dev buy FAILED - No change in SOL reserves. Pre: ${preBuySol}, Post: ${postBuySol}`);
-            throw new Error(`Dev buy transaction sent but bonding curve reserves didn't change. Transaction may have failed.`);
+            tx.add(buyTx);
           }
           
-          deploymentSig = createSig; // Use create signature as primary
+          console.log(`📤 Dev wallet sending priority transaction...`);
+          devBuySignature = await sendTx(connection, tx, [mainKeypair]);
+          console.log(`✅ Dev wallet priority TX sent: https://solscan.io/tx/${devBuySignature}`);
+          
+          // CRITICAL: Verify buy actually worked (same as bot wallets)
+          console.log(`🔍 Verifying dev wallet purchase...`);
+          await new Promise(resolve => setTimeout(resolve, 3000)); // Wait for confirmation
+          
+          const afterBalance = await getTokenBalance(connection, devBotWallet.pub, mintAddress);
+          console.log(`📊 Dev wallet after balance: ${afterBalance} tokens`);
+          
+          if (afterBalance <= beforeBalance) {
+            throw new Error(`No tokens received. Before: ${beforeBalance}, After: ${afterBalance}`);
+          }
+          
+          // SUCCESS - Dev wallet bought successfully
+          const tokenReceived = afterBalance - beforeBalance;
+          const solLeft = await getBalance(connection, devBotWallet.pub);
+          
+          console.log(`🎉 Dev wallet SUCCESS: ${tokenReceived} tokens for ${initialBuy} SOL`);
+          
+          // Set dev wallet trade info for tracking
+          devBotWallet.trade = {
+            entryPricePerToken: initialBuy / tokenReceived,
+            entrySol: initialBuy
+          };
+          
+          devBuyActuallySucceeded = true;
+          deploymentSig = createSig; // Use creation signature as main signature
+          
+          // Add success log
+          session.liveLogs.push({
+            status: 'success',
+            message: `🎉 Dev wallet priority buy: ${initialBuy} SOL → ${tokenReceived.toFixed(2)} tokens`
+          });
+          
+          console.log(`✅ Dev wallet priority buy VERIFIED - ${tokenReceived} tokens received`);
+          session.liveLogs.push({ status: 'success', message: `💰 Dev Buy Complete! ${initialBuy} SOL → ${tokenReceived.toFixed(2)} tokens` });
+          session.liveLogs.push({ status: 'success', message: `👑 Dev wallet is FIRST BUYER ✅ TX: ${devBuySignature.slice(0, 16)}...` });
           
         } catch (buyError) {
           console.error(`❌ Dev buy failed: ${buyError.message}`);
@@ -1251,5 +1405,6 @@ module.exports = {
   sendTx,
   sendJitoBundle,
   executeAtomicCreateAndBuy,
+  executeHybridBatchBuying,
   handleTransactionError
 };
