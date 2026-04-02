@@ -1563,16 +1563,16 @@ Balance: ${balance.toFixed(4)} SOL`,
         chat_id: chatId,
         message_id: msgId,
         parse_mode: 'Markdown',
-        ...tradePanel
+        ...panels.actionMenu(session)
       });
     }
 
-    if (!session.tradeConfig.contractAddress) {
-      return editText('❌ No contract.', {
+    if (!session.tradeConfig?.contractAddress) {
+      return editText('❌ No contract address set.', {
         chat_id: chatId,
         message_id: msgId,
         parse_mode: 'Markdown',
-        ...tradePanel
+        ...panels.actionMenu(session)
       });
     }
 
