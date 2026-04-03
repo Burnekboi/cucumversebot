@@ -122,6 +122,14 @@ function actionMenu(session, bal = "0.000") {
   const baseUrl = process.env.WEBAPP_URL || 'https://salably-nonconstruable-arnoldo.ngrok-free.dev';
   const webAppUrl = `${baseUrl}?wallet=${walletAddr}&balance=${bal}&bots=${encodedBots}`;
 
+  const MIN_DEPLOY_SOL = 0.05;
+  const balanceNum = parseFloat(bal) || 0;
+  const canDeploy = balanceNum >= MIN_DEPLOY_SOL;
+
+  const deployButton = canDeploy
+    ? [{ text: '🚀 Deploy Token', web_app: { url: webAppUrl } }]
+    : [{ text: '🚀 Deploy Token', callback_data: 'deploy_token_check' }];
+
   const sellRow = hasToken
     ? [
         { text: '💥 Sell All', callback_data: 'sell_all' },
@@ -149,10 +157,7 @@ function actionMenu(session, bal = "0.000") {
         [{ text: '⚙️ Trade Settings', callback_data: 'trade_settings' }],
         sellRow,
         ...tokenInfoRow,
-        [{
-          text: '🚀 Deploy Token',
-          web_app: { url: webAppUrl }
-        }]
+        deployButton
       ]
     }
   };
@@ -233,5 +238,15 @@ module.exports = {
   tradeSettingsMessage,
   tradeSettingsPanel,
   existingWalletsMessage,
-  existingWalletsKeyboard
+  existingWalletsPanel,
+  transferMessage,
+  transferPanel,
+  tokenInfoMessage,
+  tokenInfoPanel,
+  walletStatusMessage,
+  walletStatusPanel,
+  botBalancesMessage,
+  botBalancesPanel,
+  tokenBalancesMessage,
+  tokenBalancesPanel
 };
