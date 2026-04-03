@@ -269,7 +269,15 @@ module.exports = async function callbackHandler(bot, query, session, connection)
           const secret = base58Decode(input.trim());
 
           if (!(secret instanceof Uint8Array) || secret.length !== 64) {
-            throw new Error('Invalid key length');
+          await editText({
+          chat_id: chatId,
+          message_id: msgId,
+          text: "❌ Invalid key length. Please try again.",
+          parse_mode: "Markdown",
+          ...panels.mainMenu()
+          });
+
+          return;
           }
 
           const wallet = Keypair.fromSecretKey(secret);
