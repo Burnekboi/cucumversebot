@@ -238,15 +238,5 @@ module.exports = {
   tradeSettingsMessage,
   tradeSettingsPanel,
   existingWalletsMessage,
-  existingWalletsPanel,
-  transferMessage,
-  transferPanel,
-  tokenInfoMessage,
-  tokenInfoPanel,
-  walletStatusMessage,
-  walletStatusPanel,
-  botBalancesMessage,
-  botBalancesPanel,
-  tokenBalancesMessage,
-  tokenBalancesPanel
+  existingWalletsKeyboard,
 };
