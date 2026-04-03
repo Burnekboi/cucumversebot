@@ -7,6 +7,7 @@ function mainMenu() {
           { text: '📥 Import Wallet', callback_data: 'import_wallet' }
         ],
         [{ text: '📂 Existing Wallets', callback_data: 'existing_wallets' }],
+        [{ text: '❓ How to Use', callback_data: 'how_to_use' }],
         [{ text: '🔄 Refresh Session (Wipe Data)', callback_data: 'refresh_session' }]
       ]
     }
