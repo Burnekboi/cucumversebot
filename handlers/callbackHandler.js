@@ -86,7 +86,6 @@ function ensureTradeConfig(session) {
   }
 }
 
-/** Save current session main + buyers into storedWallets (max 3 slots). */
 async function persistCurrentMainIntoStoredList(chatId, session) {
   const mainAddr = session.mainWallet?.address;
   if (!mainAddr || !session.mainWallet?.priv) return;
@@ -131,7 +130,6 @@ module.exports = async function callbackHandler(bot, query, session, connection)
 
   const msgId = session.promptMessageId || messageId;
 
-  // ---------------- HELPERS ----------------
   const editText = async (text, options) => {
     try {
       await bot.editMessageText(text, options);
@@ -150,7 +148,6 @@ module.exports = async function callbackHandler(bot, query, session, connection)
 
   const safeDelay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-  // ---------------- CREATE MAIN WALLET ----------------
   if (data === 'create_wallet') {
     await editReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msgId });
 
@@ -245,7 +242,6 @@ module.exports = async function callbackHandler(bot, query, session, connection)
     return;
   }
 
-  // ---------------- IMPORT MAIN WALLET ----------------
   if (data === 'import_wallet') {
     await editReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msgId });
 
@@ -353,7 +349,6 @@ module.exports = async function callbackHandler(bot, query, session, connection)
     return;
   }
 
-  // ---------------- REFRESH SESSION ----------------
   if (data === 'refresh_session') {
     try {
       const idStr = chatId.toString();
@@ -385,7 +380,6 @@ All data wiped. Start fresh.`,
     return;
   }
 
-  // ---------------- EXISTING WALLETS ----------------
   if (data === 'existing_wallets') {
     session.pendingInput = null;
     session.existingWalletPage = 0;
@@ -573,8 +567,7 @@ All data wiped. Start fresh.`,
       }
     );
   }
-
-  // ---------------- GENERATE BUYER WALLETS ----------------
+  
   if (data === 'buyer_wallets' || data.startsWith('gen_')) {
 
     if (data === 'buyer_wallets') {
@@ -635,7 +628,6 @@ All data wiped. Start fresh.`,
     );
   }
 
-  // ---------------- QUICK GENERATION (FREE) ----------------
   if (data === 'gen_2' || data === 'gen_10') {
     const count = data === 'gen_2' ? 2 : 10;
 
@@ -669,7 +661,6 @@ All data wiped. Start fresh.`,
     return;
   }
 
-  // ---------------- PAID WALLET OPTIONS (post-buyer menu packs) ----------------
   if (['paid_20', 'paid_50', 'paid_100'].includes(data)) {
     const countMap = { paid_20: 20, paid_50: 50, paid_100: 100 };
     const priceMap = { paid_20: 0.1, paid_50: 0.5, paid_100: 1 };
@@ -727,7 +718,6 @@ Click Transfer Now to proceed.`,
     );
   }
 
-  // ---------------- WALLET STATUS ----------------
   if (['wallet_status_setup','wallet_status_post','wallet_status_trade'].includes(data)) {
     if (!session.mainWallet) {
       return editText('❌ No wallet found.', {
@@ -772,7 +762,6 @@ Bot Wallets: ${botCount}
     });
   }
 
-  // ---------------- BOT BALANCES ----------------
   if (['bot_balances', 'bot_balances_post'].includes(data)) {
     if (!session.buyers?.length) {
       return editText('❌ No buyer wallets.', {
@@ -814,7 +803,6 @@ Bot Wallets: ${botCount}
     });
   }
 
-  // ---------------- TOKEN BALANCES (mint / SPL) ----------------
   if (data === 'token_balances') {
     const mint = session.tradeConfig?.contractAddress;
     if (!mint) {
@@ -870,7 +858,6 @@ Bot Wallets: ${botCount}
     });
   }
 
-  // ---------------- DISTRIBUTE SOL ----------------
   if (data === 'distribute_sol') {
     if (!session.mainWallet || !session.buyers?.length) {
       return editText('❌ Missing wallets.', {
@@ -948,7 +935,6 @@ Bot Wallets: ${botCount}
     return;
   }
 
-  // ---------------- TRANSFER BACK ----------------
   if (['transfer_main','transfer_trade'].includes(data)) {
     if (!session.mainWallet || !session.buyers?.length) {
       return editText('❌ Missing wallets.', {
@@ -997,7 +983,6 @@ Bot Wallets: ${botCount}
     });
   }
 
-  // ---------------- CANCEL PAYMENT (bulk packs or add-bot) ----------------
   if (data === 'cancel_payment') {
     const backToAction = !!session.payAddBots;
     session.payBulkBuyers = null;
@@ -1018,7 +1003,6 @@ Bot Wallets: ${botCount}
     });
   }
 
-  // ---------------- PAYMENT: Transfer Now ----------------
   if (['auto_transfer', 'paid_transfer'].includes(data)) {
     const wasAddBot = !!session.payAddBots;
     const menuOnFail = () => (wasAddBot ? panels.actionMenu(session) : panels.postBuyerMenu());
@@ -1045,7 +1029,6 @@ Bot Wallets: ${botCount}
       });
     }
 
-    // Add-bot payment (Bot Settings: count × 0.01 SOL each)
     if (session.payAddBots) {
       const { count, price } = session.payAddBots;
       const main = Keypair.fromSecretKey(base58Decode(session.mainWallet.priv));
@@ -1104,7 +1087,6 @@ Bot Wallets: ${botCount}
       }
     }
 
-    // Bulk packs (paid_20 / 50 / 100)
     if (session.payBulkBuyers) {
       const { count, price } = session.payBulkBuyers;
       const main = Keypair.fromSecretKey(base58Decode(session.mainWallet.priv));
@@ -1170,7 +1152,6 @@ Bot Wallets: ${botCount}
     });
   }
 
-  // ---------------- ACTION MENU ----------------
   if (['action_menu', 'back_to_action'].includes(data)) {
     if (
       session.pendingInput?.type === 'add_bot_count' ||
@@ -1203,7 +1184,6 @@ Balance: ${balance.toFixed(4)} SOL`,
     );
   }
 
-  // ---------------- BOT SETTINGS ----------------
   if (data === 'bot_settings') {
     if (
       session.pendingInput?.type === 'delete_specific_bot' ||
@@ -1395,7 +1375,6 @@ Balance: ${balance.toFixed(4)} SOL`,
     );
   }
 
-  // ---------------- TRADE SETTINGS (panel + field edits) ----------------
   if (data === 'ts_back') {
     session.pendingInput = null;
     if (!session.mainWallet?.address) {
@@ -1471,7 +1450,6 @@ Balance: ${balance.toFixed(4)} SOL`,
         '✏️ *Contract*\nSend the token mint address (base58), or send `clear` to remove.'
     };
 
-    // app.js clears session.pendingInput before calling resolve — capture field in closure
     const fieldKey = data;
 
     session.pendingInput = {
@@ -1562,7 +1540,6 @@ Balance: ${balance.toFixed(4)} SOL`,
     });
   }
 
-  // ---------------- TRADE TOGGLE ----------------
   if (data === 'trade_toggle') {
     if (!session.buyers?.length) {
       return editText('❌ No buyers.', {
@@ -1604,7 +1581,6 @@ Balance: ${balance.toFixed(4)} SOL`,
     return;
   }
 
-  // ---------------- SELL ALL ----------------
   if (data === 'sell_all') {
     if (!session.tradeConfig?.contractAddress) {
       return editText(
@@ -1645,7 +1621,6 @@ Balance: ${balance.toFixed(4)} SOL`,
     });
   }
 
-  // ---------------- TOKEN INFO ----------------
   if (data === 'token_info') {
     const contract = session.tradeConfig?.contractAddress;
     if (!contract) {
@@ -1686,7 +1661,6 @@ Balance: ${balance.toFixed(4)} SOL`,
     }
   }
 
-  // ---------------- DEPLOY ----------------
   if (data === 'deploy_token') {
     return editText('🚀 Coming soon.', {
       chat_id: chatId,
