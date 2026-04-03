@@ -185,6 +185,17 @@ module.exports = async function callbackHandler(bot, query, session, connection)
       }
     );
   }
+  if (data === 'back_to_main') {
+    return editText(
+      `👋 *Welcome to Cucumverse Bot*\n\nChoose an option below to get started:`,
+      {
+        chat_id: chatId,
+        message_id: msgId,
+        parse_mode: 'Markdown',
+        ...panels.mainMenu()
+      }
+    );
+  }
   
   if (data === 'create_wallet') {
     await editReplyMarkup({ inline_keyboard: [] }, { chat_id: chatId, message_id: msgId });
