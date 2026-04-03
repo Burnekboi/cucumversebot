@@ -1168,7 +1168,14 @@ Bot Wallets: ${botCount}
     return editText(
       `🥒 *CUCUMVERSE TERMINAL*
 
-Wallet: \`${session.mainWallet.address.slice(0,4)}...\`
+🚀 Ready to wreak havoc in the crypto jungle?  
+💥 Multiwallet madness — trade all your wallets at once  
+⚡ Auto-sniping tokens before anyone even smells them  
+🔥 Deploy your own meme coins and watch chaos unfold  
+🎯 Configure insane strategies — pump, dump, repeat  
+💰 Real-time stats to flex on the weak hands  
+
+Wallet: \`${session.mainWallet.address.slice(0,4)}...\`  
 Balance: ${balance.toFixed(4)} SOL`,
       {
         chat_id: chatId,
@@ -1384,7 +1391,14 @@ Balance: ${balance.toFixed(4)} SOL`,
     return editText(
       `🥒 *CUCUMVERSE TERMINAL*
 
-Wallet: \`${session.mainWallet.address.slice(0, 4)}...\`
+🚀 Ready to wreak havoc in the crypto jungle?  
+💥 Multiwallet madness — trade all your wallets at once  
+⚡ Auto-sniping tokens before anyone even smells them  
+🔥 Deploy your own meme coins and watch chaos unfold  
+🎯 Configure insane strategies — pump, dump, repeat  
+💰 Real-time stats to flex on the weak hands  
+
+Wallet: \`${session.mainWallet.address.slice(0,4)}...\`  
 Balance: ${balance.toFixed(4)} SOL`,
       {
         chat_id: chatId,
