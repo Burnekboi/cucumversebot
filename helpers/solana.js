@@ -739,12 +739,26 @@ async function handleDeployRequest(bot, connection, data, chatId, session, termM
  * ===============================
  */
 async function getBalance(connection, pubkey) {
+  if (!pubkey) return 0;
+  const { Connection } = require('@solana/web3.js');
+  const rpcList = (process.env.RPC_URL || '').split(',').map(u => u.trim()).filter(Boolean);
+  // Try each RPC in random order until one succeeds
+  const shuffled = rpcList.sort(() => Math.random() - 0.5);
+  for (const rpc of shuffled) {
+    try {
+      const conn = new Connection(rpc, 'confirmed');
+      const lamports = await conn.getBalance(new PublicKey(pubkey));
+      return lamports / LAMPORTS_PER_SOL;
+    } catch (err) {
+      console.warn(`getBalance RPC failed (${rpc.split('.')[0]}): ${err.message}`);
+    }
+  }
+  // Final fallback to the passed-in connection
   try {
-    if (!pubkey) return 0;
     const lamports = await connection.getBalance(new PublicKey(pubkey));
     return lamports / LAMPORTS_PER_SOL;
   } catch (err) {
-    console.error('getBalance error:', err.message);
+    console.error('getBalance error (all RPCs exhausted):', err.message);
     return 0;
   }
 }
