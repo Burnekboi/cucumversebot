@@ -18,7 +18,16 @@ const app = express();
    DATABASE
 ===================================================== */
 mongoose.connect(process.env.MONGO_URI)
-  .then(() => console.log("✅ MongoDB Connected"))
+  .then(async () => {
+    console.log("✅ MongoDB Connected");
+    // Drop stale chatId_1 index left over from an old schema version
+    try {
+      await mongoose.connection.collection('users').dropIndex('chatId_1');
+      console.log("🧹 Dropped stale index: chatId_1");
+    } catch (e) {
+      // Index doesn't exist — that's fine, nothing to do
+    }
+  })
   .catch(err => console.log("❌ Mongo Error:", err));
 
 /* =====================================================
